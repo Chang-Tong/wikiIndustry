@@ -202,7 +202,8 @@ export default function App() {
 
   // Poll backend job status when there is a pending job with jobId
   useEffect(() => {
-    if (!pendingJob?.jobId) return
+    const jobId = pendingJob?.jobId
+    if (!jobId) return
 
     const poll = async () => {
       try {
@@ -210,16 +211,19 @@ export default function App() {
           job_id: string
           status: 'processing' | 'completed' | 'failed'
           progress: { total: number; processed: number; errors: string[] }
-        }>(`/api/v1/json/jobs/${pendingJob.jobId}`)
+        }>(`/api/v1/json/jobs/${jobId}`)
 
-        const updated: PendingJob = {
-          ...pendingJob,
-          backendStatus: data.status,
-          backendProgress: data.progress,
-          timestamp: Date.now(),
-        }
-        setPendingJob(updated)
-        savePendingJob(updated)
+        setPendingJob(prev => {
+          if (!prev || prev.jobId !== jobId) return prev
+          const updated: PendingJob = {
+            ...prev,
+            backendStatus: data.status,
+            backendProgress: data.progress,
+            timestamp: Date.now(),
+          }
+          savePendingJob(updated)
+          return updated
+        })
 
         if (data.status === 'completed' || data.status === 'failed') {
           // Job finished: load graph and clear after a short delay
@@ -228,9 +232,14 @@ export default function App() {
             window.clearInterval(pollTimerRef.current)
             pollTimerRef.current = null
           }
-          setTimeout(() => {
-            setPendingJob(null)
-            savePendingJob(null)
+          window.setTimeout(() => {
+            setPendingJob(prev => {
+              if (prev?.jobId === jobId) {
+                savePendingJob(null)
+                return null
+              }
+              return prev
+            })
           }, 3000)
         }
       } catch (e) {

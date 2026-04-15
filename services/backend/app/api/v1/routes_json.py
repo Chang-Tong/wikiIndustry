@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -57,6 +58,13 @@ class JobStatusResponse(BaseModel):
 _job_store: dict[str, dict[str, Any]] = {}
 
 
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Background batch processing failed")
+
+
 @router.post("/json/upload", response_model=JSONIngestResponse)
 async def upload_json_file(
     file: UploadFile = File(..., description="JSON news data file"),
@@ -101,8 +109,27 @@ async def upload_json_file(
             detail="Mode must be 'incremental' or 'overwrite'",
         )
 
-    # Process items and build graph
-    return await _process_batch(batch, schema_name, mode=mode)
+    # Process items and build graph in background
+    job_id = str(uuid.uuid4())
+    _job_store[job_id] = {
+        "status": "processing",
+        "total": batch.total_count,
+        "processed": 0,
+        "errors": [],
+    }
+    task = asyncio.create_task(_process_batch(job_id, batch, schema_name, mode=mode))
+    task.add_done_callback(_log_task_exception)
+    return JSONIngestResponse(
+        job_id=job_id,
+        status="processing",
+        total_items=batch.total_count,
+        processed_items=0,
+        extracted_entities=0,
+        extracted_relations=0,
+        correlation_edges=0,
+        embeddings_generated=0,
+        errors=[],
+    )
 
 
 @router.post("/json/ingest", response_model=JSONIngestResponse)
@@ -131,30 +158,38 @@ async def ingest_json_data(
             detail=f"Failed to process JSON: {str(e)}",
         )
 
-    return await _process_batch(batch, request.schema_name)
-
-
-async def _process_batch(
-    batch: Any,
-    schema_name: str,
-    mode: str = "incremental",
-    store: SqliteStore | None = None,
-) -> JSONIngestResponse:
-    """Process news batch and build knowledge graph."""
     job_id = str(uuid.uuid4())
-
-    logger.info(f"[{job_id}] Starting batch processing - Mode: {mode}, Items: {batch.total_count}")
-
     _job_store[job_id] = {
         "status": "processing",
         "total": batch.total_count,
         "processed": 0,
         "errors": [],
     }
+    task = asyncio.create_task(_process_batch(job_id, batch, request.schema_name))
+    task.add_done_callback(_log_task_exception)
+    return JSONIngestResponse(
+        job_id=job_id,
+        status="processing",
+        total_items=batch.total_count,
+        processed_items=0,
+        extracted_entities=0,
+        extracted_relations=0,
+        correlation_edges=0,
+        embeddings_generated=0,
+        errors=[],
+    )
 
-    # Create store if not provided
-    if store is None:
-        store = SqliteStore(settings.sqlite_path)
+
+async def _process_batch(
+    job_id: str,
+    batch: Any,
+    schema_name: str,
+    mode: str = "incremental",
+) -> None:
+    """Process news batch and build knowledge graph."""
+    logger.info(f"[{job_id}] Starting batch processing - Mode: {mode}, Items: {batch.total_count}")
+
+    store = SqliteStore(settings.sqlite_path)
 
     oneke = OneKEClient(
         base_url=settings.oneke_base_url,
@@ -185,6 +220,10 @@ async def _process_batch(
             logger.error(f"[{job_id}] Failed to clear SQLite data: {e}")
 
     try:
+        neo4j_start = time.time()
+        await neo4j.open()
+        logger.info(f"[{job_id}] Neo4j connected in {time.time() - neo4j_start:.2f}s")
+
         if mode == "overwrite":
             try:
                 from neo4j import AsyncDriver
@@ -275,17 +314,8 @@ async def _process_batch(
         _job_store[job_id]["status"] = "failed"
         errors.append(str(e))
 
-    return JSONIngestResponse(
-        job_id=job_id,
-        status=_job_store[job_id]["status"],
-        total_items=batch.total_count,
-        processed_items=processed_count,
-        extracted_entities=total_entities,
-        extracted_relations=total_relations,
-        correlation_edges=_job_store[job_id].get("correlation_edges", 0),
-        embeddings_generated=_job_store[job_id].get("embeddings_generated", 0),
-        errors=errors,
-    )
+    finally:
+        await neo4j.close()
 
 
 async def _extract_from_item(
