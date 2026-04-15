@@ -55,6 +55,15 @@ interface IngestResponse {
   errors: string[]
 }
 
+interface PendingJob {
+  fileName: string
+  uploadProgress: number
+  jobId?: string
+  backendStatus?: 'processing' | 'completed' | 'failed'
+  backendProgress?: { total: number; processed: number; errors: string[] }
+  timestamp: number
+}
+
 interface QueryLogInfo {
   query: string
   parameters: Record<string, unknown>
@@ -97,6 +106,36 @@ const NODE_COLORS: Record<string, string> = {
   Entity: '#48484A',
 }
 
+const PENDING_JOB_KEY = 'wiki_pending_job'
+
+function loadPendingJob(): PendingJob | null {
+  try {
+    const raw = localStorage.getItem(PENDING_JOB_KEY)
+    if (!raw) return null
+    const job = JSON.parse(raw) as PendingJob
+    // 超过 24 小时的旧记录视为过期
+    if (Date.now() - job.timestamp > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(PENDING_JOB_KEY)
+      return null
+    }
+    return job
+  } catch {
+    return null
+  }
+}
+
+function savePendingJob(job: PendingJob | null) {
+  try {
+    if (job) {
+      localStorage.setItem(PENDING_JOB_KEY, JSON.stringify(job))
+    } else {
+      localStorage.removeItem(PENDING_JOB_KEY)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function getNodeColor(type: string | undefined): string {
   if (!type) return '#8E8E93'
   if (NODE_COLORS[type]) return NODE_COLORS[type]
@@ -123,6 +162,8 @@ export default function App() {
   const [uploadResult, setUploadResult] = useState<IngestResponse | null>(null)
   const [uploadMode, setUploadMode] = useState<'incremental' | 'overwrite'>('incremental')
   const [uploadProgress, setUploadProgress] = useState<number>(0)
+  const [pendingJob, setPendingJob] = useState<PendingJob | null>(null)
+  const pollTimerRef = useRef<number | null>(null)
 
   // Graph state
   const [graphData, setGraphData] = useState<GraphData | null>(null)
@@ -151,11 +192,71 @@ export default function App() {
     loadGraph()
   }, [])
 
-  // Cleanup slider timer on unmount
+  // Restore pending job from localStorage on mount
+  useEffect(() => {
+    const job = loadPendingJob()
+    if (job) {
+      setPendingJob(job)
+    }
+  }, [])
+
+  // Poll backend job status when there is a pending job with jobId
+  useEffect(() => {
+    if (!pendingJob?.jobId) return
+
+    const poll = async () => {
+      try {
+        const { data } = await api.get<{
+          job_id: string
+          status: 'processing' | 'completed' | 'failed'
+          progress: { total: number; processed: number; errors: string[] }
+        }>(`/api/v1/json/jobs/${pendingJob.jobId}`)
+
+        const updated: PendingJob = {
+          ...pendingJob,
+          backendStatus: data.status,
+          backendProgress: data.progress,
+          timestamp: Date.now(),
+        }
+        setPendingJob(updated)
+        savePendingJob(updated)
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          // Job finished: load graph and clear after a short delay
+          await loadGraph()
+          if (pollTimerRef.current) {
+            window.clearInterval(pollTimerRef.current)
+            pollTimerRef.current = null
+          }
+          setTimeout(() => {
+            setPendingJob(null)
+            savePendingJob(null)
+          }, 3000)
+        }
+      } catch (e) {
+        console.error('Poll job status failed:', e)
+      }
+    }
+
+    poll()
+    pollTimerRef.current = window.setInterval(poll, 2000)
+
+    return () => {
+      if (pollTimerRef.current) {
+        window.clearInterval(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+    }
+  }, [pendingJob?.jobId])
+
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (sliderTimerRef.current) {
         window.clearTimeout(sliderTimerRef.current)
+      }
+      if (pollTimerRef.current) {
+        window.clearInterval(pollTimerRef.current)
       }
     }
   }, [])
@@ -512,6 +613,14 @@ export default function App() {
 
     setIsLoading(true)
     setUploadProgress(0)
+    const initialJob: PendingJob = {
+      fileName: selectedFile.name,
+      uploadProgress: 0,
+      timestamp: Date.now(),
+    }
+    setPendingJob(initialJob)
+    savePendingJob(initialJob)
+
     try {
       const formData = new FormData()
       formData.append('file', selectedFile)
@@ -524,17 +633,43 @@ export default function App() {
           if (progressEvent.total) {
             const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
             setUploadProgress(percent)
+            const updated: PendingJob = {
+              fileName: selectedFile.name,
+              uploadProgress: percent,
+              timestamp: Date.now(),
+            }
+            setPendingJob(updated)
+            savePendingJob(updated)
           }
         }
       })
 
       setUploadResult(data)
+      const withJobId: PendingJob = {
+        fileName: selectedFile.name,
+        uploadProgress: 100,
+        jobId: data.job_id,
+        backendStatus: data.status as any,
+        backendProgress: {
+          total: data.total_items,
+          processed: data.processed_items,
+          errors: data.errors,
+        },
+        timestamp: Date.now(),
+      }
+      setPendingJob(withJobId)
+      savePendingJob(withJobId)
+
       if (data.status === 'completed' && data.processed_items > 0) {
         await loadGraph()
+        setPendingJob(null)
+        savePendingJob(null)
       }
     } catch (e) {
       console.error('Upload failed:', e)
       alert('上传失败，请检查服务是否正常运行')
+      setPendingJob(null)
+      savePendingJob(null)
     } finally {
       setIsLoading(false)
       setUploadProgress(0)
@@ -614,6 +749,97 @@ export default function App() {
                 <p className="card-subtitle">上传新闻 JSON 文件，自动构建知识图谱</p>
               </div>
               <div className="card-body">
+                {pendingJob && (
+                  <div style={{
+                    marginBottom: 20,
+                    padding: 14,
+                    background: pendingJob.backendStatus === 'failed'
+                      ? 'rgba(255,55,95,0.12)'
+                      : pendingJob.backendStatus === 'completed'
+                        ? 'rgba(48,209,88,0.12)'
+                        : 'rgba(10,132,255,0.12)',
+                    borderRadius: 10,
+                    border: `1px solid ${pendingJob.backendStatus === 'failed'
+                      ? 'rgba(255,55,95,0.35)'
+                      : pendingJob.backendStatus === 'completed'
+                        ? 'rgba(48,209,88,0.35)'
+                        : 'rgba(10,132,255,0.35)'}`,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                      {pendingJob.backendStatus === 'failed' && '❌ 处理失败'}
+                      {pendingJob.backendStatus === 'completed' && '✅ 处理完成'}
+                      {!pendingJob.backendStatus && '⏳ 准备上传'}
+                      {pendingJob.backendStatus === 'processing' && '⚙️ 后端处理中'}
+                      {!pendingJob.jobId && pendingJob.uploadProgress < 100 && '⏫ 正在上传'}
+                      <span style={{ marginLeft: 8, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                        {pendingJob.fileName}
+                      </span>
+                    </div>
+
+                    {(pendingJob.uploadProgress < 100 || !pendingJob.jobId) ? (
+                      <>
+                        <div style={{
+                          height: 6,
+                          background: 'rgba(255,255,255,0.1)',
+                          borderRadius: 3,
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            width: `${pendingJob.uploadProgress}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #0A84FF, #64D2FF)',
+                            borderRadius: 3,
+                            transition: 'width 0.2s ease',
+                          }} />
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                          上传进度: {pendingJob.uploadProgress}%
+                        </div>
+                      </>
+                    ) : pendingJob.backendStatus === 'processing' && pendingJob.backendProgress ? (
+                      <>
+                        <div style={{
+                          height: 6,
+                          background: 'rgba(255,255,255,0.1)',
+                          borderRadius: 3,
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            width: `${pendingJob.backendProgress.total
+                              ? Math.min(100, Math.round((pendingJob.backendProgress.processed * 100) / pendingJob.backendProgress.total))
+                              : 0}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #30D158, #64D2FF)',
+                            borderRadius: 3,
+                            transition: 'width 0.3s ease',
+                          }} />
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
+                          后端处理进度: {pendingJob.backendProgress.processed} / {pendingJob.backendProgress.total} 条
+                          {pendingJob.backendProgress.errors.length > 0 && (
+                            <span style={{ color: '#FF375F', marginLeft: 8 }}>
+                              ({pendingJob.backendProgress.errors.length} 个错误)
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    ) : null}
+
+                    {pendingJob.backendStatus === 'failed' && (
+                      <button
+                        className="btn btn-secondary"
+                        style={{ marginTop: 10, fontSize: 12, padding: '6px 12px' }}
+                        onClick={() => {
+                          setPendingJob(null)
+                          savePendingJob(null)
+                        }}
+                      >
+                        关闭提示
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <input
                   type="file"
                   accept=".json"
