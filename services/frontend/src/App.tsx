@@ -22,6 +22,11 @@ interface GraphEdge {
   [key: string]: unknown
 }
 
+interface DocDetail {
+  title: string
+  text: string
+}
+
 interface SelectedElement {
   type: 'node' | 'edge'
   id: string
@@ -29,6 +34,7 @@ interface SelectedElement {
   nodeType?: string
   source?: string
   target?: string
+  docDetail?: DocDetail
   data: unknown
 }
 
@@ -77,6 +83,7 @@ const NODE_COLORS: Record<string, string> = {
   Organization: '#30D158',
   Person: '#64D2FF',
   Policy: '#BF5AF2',
+  Project: '#FF2D55',
   ThemeTag: '#FFD60A',
   ProvinceTag: '#FF375F',
   CityTag: '#0A84FF',
@@ -88,6 +95,23 @@ const NODE_COLORS: Record<string, string> = {
   Time: '#8E8E93',
   URL: '#636366',
   Entity: '#48484A',
+}
+
+function getNodeColor(type: string | undefined): string {
+  if (!type) return '#8E8E93'
+  if (NODE_COLORS[type]) return NODE_COLORS[type]
+  // 为未知类型生成一个稳定颜色（基于字符串哈希）
+  const palette = [
+    '#FF9500', '#30D158', '#64D2FF', '#BF5AF2', '#FF2D55',
+    '#FFD60A', '#FF375F', '#0A84FF', '#A2845E', '#FF6B35',
+    '#32ADE6', '#5856D6', '#AF52DE', '#8E8E93', '#636366',
+    '#FF9F0A', '#34C759', '#5AC8FA', '#AF52DE', '#FF3B30',
+  ]
+  let hash = 0
+  for (let i = 0; i < type.length; i++) {
+    hash = type.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  return palette[Math.abs(hash) % palette.length]
 }
 
 export default function App() {
@@ -106,8 +130,10 @@ export default function App() {
   const [selectedTheme, setSelectedTheme] = useState<string>('')
   const [selectedRelTypes, setSelectedRelTypes] = useState<string[]>([])
   const [availableRelTypes, setAvailableRelTypes] = useState<string[]>([])
+  const [nodeLimit, setNodeLimit] = useState<number>(25)
   const graphRef = useRef<Graph | null>(null)
   const graphContainerRef = useRef<HTMLDivElement>(null)
+  const sliderTimerRef = useRef<number | null>(null)
 
   // Chat state
   const [question, setQuestion] = useState('')
@@ -124,24 +150,26 @@ export default function App() {
     loadGraph()
   }, [])
 
+  // Cleanup slider timer on unmount
+  useEffect(() => {
+    return () => {
+      if (sliderTimerRef.current) {
+        window.clearTimeout(sliderTimerRef.current)
+      }
+    }
+  }, [])
+
   // Initialize G6 graph when switching to graph tab
   useEffect(() => {
     if (activeTab === 'graph' && graphContainerRef.current && graphData && !graphRef.current) {
       const nodes = graphData.elements.nodes.map(n => ({
         id: n.data.id,
-        label: n.data.label || n.data.id,
+        label: `${n.data.label || n.data.id} (${n.data.type || 'Entity'})`,
         data: {
           ...n.data,
-          type: n.data.type,
+          nodeType: n.data.type,
         },
       }))
-
-      // 提取所有关系类型
-      const relTypes = Array.from(new Set(graphData.elements.edges.map(e => e.data.type || 'REL'))).sort()
-      setAvailableRelTypes(relTypes)
-      if (selectedRelTypes.length === 0) {
-        setSelectedRelTypes(relTypes)
-      }
 
       const edges = graphData.elements.edges.map(e => {
         const isCorrelation = e.data.type === 'CORRELATED_WITH'
@@ -200,16 +228,21 @@ export default function App() {
         data: { nodes, edges },
         node: {
           style: {
-            size: 32,
-            fill: function(this: Graph, d: { type?: string }) {
-              return NODE_COLORS[d.type as keyof typeof NODE_COLORS] || '#8E8E93'
+            size: 36,
+            fill: function(this: Graph, d: { data?: { nodeType?: string } }) {
+              return getNodeColor(d.data?.nodeType)
             },
             stroke: '#1C1C1E',
             lineWidth: 2,
+            labelText: function(this: Graph, d: { label?: string; id?: string }) {
+              return d.label || d.id || ''
+            } as unknown as string,
             labelFill: '#FFFFFF',
-            labelFontSize: 10,
+            labelFontSize: 9,
             labelFontWeight: 500,
-            labelOffsetY: 8,
+            labelOffsetY: 10,
+            labelWordWrap: true,
+            labelMaxWidth: 120,
             cursor: 'pointer',
           },
           state: {
@@ -245,11 +278,13 @@ export default function App() {
           preventOverlap: true,
           nodeSpacing: 25,
           linkDistance: 80,
+          maxIteration: 300,
+          animated: false,
         },
         behaviors: [
-          'drag-canvas',
-          'zoom-canvas',
-          'drag-node',
+          { type: 'drag-canvas' },
+          { type: 'zoom-canvas', sensitivity: 1.2 },
+          { type: 'drag-element' },
         ],
       })
 
@@ -271,32 +306,43 @@ export default function App() {
       }
 
       // Handle node click - G6 v5 event structure
-      graph.on('node:click', (e: Event) => {
-        const event = e as unknown as { target: { id: string } }
-        const nodeId = event.target?.id
+      graph.on('node:click', async (e: unknown) => {
+        const event = e as { itemId?: string; target?: { id?: string } }
+        const nodeId = event.itemId || event.target?.id
         if (!nodeId) return
 
         console.log('Node clicked:', nodeId)
 
-        const nodeData = graph.getNodeData(nodeId) as { label?: string; type?: string; [key: string]: unknown } | undefined
+        const nodeData = graph.getNodeData(nodeId) as { label?: string; data?: { nodeType?: string }; [key: string]: unknown } | undefined
         if (!nodeData) return
 
         handleNodeSelect(nodeId)
         graph.setElementState(nodeId, 'selected')
 
-        setSelectedElement({
+        const element: SelectedElement = {
           type: 'node',
           id: nodeId,
           label: nodeData.label || nodeId,
-          nodeType: nodeData.type || 'Unknown',
+          nodeType: nodeData.data?.nodeType || 'Unknown',
           data: nodeData
-        })
+        }
+        setSelectedElement(element)
+
+        // Load full text for NewsItem nodes
+        if (nodeData.data?.nodeType === 'NewsItem') {
+          try {
+            const { data: docData } = await api.get<DocDetail>(`/api/v1/docs/${nodeId}`)
+            setSelectedElement(prev => prev && prev.id === nodeId && prev.type === 'node' ? { ...prev, docDetail: docData } : prev)
+          } catch (err) {
+            console.error('Failed to load doc detail:', err)
+          }
+        }
       })
 
       // Handle edge click
-      graph.on('edge:click', (e: Event) => {
-        const event = e as unknown as { target: { id: string } }
-        const edgeId = event.target?.id
+      graph.on('edge:click', (e: unknown) => {
+        const event = e as { itemId?: string; target?: { id?: string } }
+        const edgeId = event.itemId || event.target?.id
         if (!edgeId) return
 
         console.log('Edge clicked:', edgeId)
@@ -315,9 +361,9 @@ export default function App() {
       })
 
       // Click on empty canvas to deselect
-      graph.on('canvas:click', (e: Event) => {
-        // Stop propagation to avoid triggering other handlers
-        e.stopPropagation()
+      graph.on('canvas:click', (e: unknown) => {
+        const event = e as { stopPropagation?: () => void }
+        event.stopPropagation?.()
         if (selectedElement) {
           try {
             graph.setElementState(selectedElement.id, [])
@@ -342,13 +388,22 @@ export default function App() {
   const loadGraph = useCallback(async () => {
     try {
       console.log('Loading graph...')
-      const { data } = await api.get<GraphData>('/api/v1/graph')
+      const { data } = await api.get<GraphData>('/api/v1/graph', {
+        params: { node_limit: nodeLimit }
+      })
       console.log('Graph data loaded:', data.elements.nodes.length, 'nodes,', data.elements.edges.length, 'edges')
+      // 重置关系筛选和选中状态，强制 graph useEffect 重新初始化
+      setSelectedRelTypes([])
+      setSelectedElement(null)
+      if (graphRef.current) {
+        graphRef.current.destroy()
+        graphRef.current = null
+      }
       setGraphData(data)
     } catch (e) {
       console.error('Failed to load graph:', e)
     }
-  }, [])
+  }, [nodeLimit])
 
   // Load theme tags
   const loadThemeTags = useCallback(async () => {
@@ -364,20 +419,44 @@ export default function App() {
   const loadGraphByTheme = useCallback(async (theme: string) => {
     try {
       setIsLoading(true)
-      const { data } = await api.get<GraphData>(`/api/v1/graph/theme/${encodeURIComponent(theme)}`)
+      const { data } = await api.get<GraphData>(`/api/v1/graph/theme/${encodeURIComponent(theme)}`, {
+        params: { news_limit: nodeLimit }
+      })
       console.log('Theme graph loaded:', data.elements.nodes.length, 'nodes,', data.elements.edges.length, 'edges')
-      setGraphData(data)
-      // Destroy old graph to force re-render
+      // 重置关系筛选和选中状态，强制 graph useEffect 重新初始化
+      setSelectedRelTypes([])
+      setSelectedElement(null)
       if (graphRef.current) {
         graphRef.current.destroy()
         graphRef.current = null
       }
+      setGraphData(data)
     } catch (e) {
       console.error('Failed to load graph by theme:', e)
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [nodeLimit])
+
+  const buildCorrelationEdges = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      const { data } = await api.post<{ created_edges: number; message: string }>(
+        '/api/v1/correlations/build-edges?min_score=0.05&use_vector=true'
+      )
+      alert(`相似度关联构建完成：${data.message}`)
+      if (selectedTheme) {
+        await loadGraphByTheme(selectedTheme)
+      } else {
+        await loadGraph()
+      }
+    } catch (e: any) {
+      console.error('Build correlation edges failed:', e)
+      alert('构建相似度关联失败：' + (e.response?.data?.detail || e.message))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [loadGraph, loadGraphByTheme, selectedTheme])
 
   // Load theme tags when graph tab is active
   useEffect(() => {
@@ -386,70 +465,35 @@ export default function App() {
     }
   }, [activeTab, loadThemeTags])
 
-  // 当关系筛选变化时更新图谱显示
+  // 当图谱数据变化时，更新可用关系类型并默认全选
+  useEffect(() => {
+    if (!graphData) return
+    const relTypes = Array.from(new Set(graphData.elements.edges.map(e => e.data.type || 'REL'))).sort()
+    setAvailableRelTypes(relTypes)
+    setSelectedRelTypes(prev => {
+      if (prev.length === 0) return relTypes
+      const filtered = prev.filter(t => relTypes.includes(t))
+      return filtered.length > 0 ? filtered : relTypes
+    })
+  }, [graphData])
+
+  // 当关系筛选变化时更新图谱显示（仅更新 visibility，不触发重新布局）
   useEffect(() => {
     const graph = graphRef.current
     if (!graph || !graphData) return
 
     try {
-      const allEdges = graphData.elements.edges.map((e) => {
-        const isCorrelation = e.data.type === 'CORRELATED_WITH'
-        const isRel = e.data.type === 'REL'
-        const labelText = isCorrelation
-          ? `相似度: ${(Number(e.data.score) || 0).toFixed(2)}`
-          : e.data.label || e.data.type || ''
+      const updates = graphData.elements.edges.map((e) => {
+        const visible = selectedRelTypes.includes(e.data.type || 'REL')
         return {
           id: e.data.id,
-          source: e.data.source,
-          target: e.data.target,
-          label: labelText,
-          data: { ...e.data },
-          style: isCorrelation
-            ? {
-                stroke: '#FF375F',
-                lineWidth: 3,
-                lineDash: [8, 4],
-                endArrow: false,
-                labelText,
-                labelFill: '#FF375F',
-                labelFontSize: 11,
-                labelFontWeight: 'bold' as const,
-                labelBackgroundFill: 'rgba(28,28,30,0.9)',
-                labelBackgroundRadius: 4,
-                halo: true,
-                haloStroke: '#FF375F',
-                haloLineWidth: 4,
-                haloOpacity: 0.3,
-                visibility: selectedRelTypes.includes(e.data.type || 'REL') ? ('visible' as const) : ('hidden' as const),
-              }
-            : isRel
-              ? {
-                  stroke: 'rgba(255,255,255,0.25)',
-                  lineWidth: 1,
-                  endArrow: true,
-                  endArrowSize: 6,
-                  labelText,
-                  labelFill: 'rgba(255,255,255,0.5)',
-                  labelFontSize: 9,
-                  labelBackgroundFill: 'rgba(28,28,30,0.8)',
-                  labelBackgroundRadius: 4,
-                  visibility: selectedRelTypes.includes(e.data.type || 'REL') ? ('visible' as const) : ('hidden' as const),
-                }
-              : {
-                  stroke: 'rgba(255,255,255,0.3)',
-                  lineWidth: 1,
-                  endArrow: true,
-                  labelText,
-                  labelFill: 'rgba(255,255,255,0.6)',
-                  labelFontSize: 9,
-                  labelBackgroundFill: 'rgba(28,28,30,0.8)',
-                  labelBackgroundRadius: 4,
-                  visibility: selectedRelTypes.includes(e.data.type || 'REL') ? ('visible' as const) : ('hidden' as const),
-                },
+          style: {
+            visibility: visible ? ('visible' as const) : ('hidden' as const),
+          },
         }
       })
-      graph.setData({ nodes: graph.getData().nodes, edges: allEdges })
-      graph.render()
+      graph.updateEdgeData(updates)
+      graph.draw()
     } catch (e) {
       console.error('Failed to filter edges:', e)
     }
@@ -692,6 +736,7 @@ export default function App() {
                       display: 'flex',
                       gap: 8,
                       pointerEvents: 'none',
+                      flexWrap: 'wrap',
                     }}>
                       <span style={{
                         padding: '4px 10px',
@@ -702,6 +747,16 @@ export default function App() {
                         color: 'var(--text-tertiary)',
                       }}>
                         拖拽画布移动 · 滚轮缩放
+                      </span>
+                      <span style={{
+                        padding: '4px 10px',
+                        background: 'rgba(5,10,20,0.8)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 6,
+                        fontSize: 11,
+                        color: 'var(--text-secondary)',
+                      }}>
+                        {graphData.elements.nodes.length} 节点 · {graphData.elements.edges.length} 关系
                       </span>
                     </div>
                   </>
@@ -719,6 +774,50 @@ export default function App() {
 
               <div className="card graph-sidebar">
                 <div className="card-header">
+                  <h3 className="card-title">显示数量</h3>
+                </div>
+                <div className="card-body" style={{ paddingBottom: 12, borderBottom: '1px solid var(--border-color)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <input
+                      type="range"
+                      min={10}
+                      max={200}
+                      step={5}
+                      value={nodeLimit}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10)
+                        setNodeLimit(val)
+                        if (sliderTimerRef.current) {
+                          window.clearTimeout(sliderTimerRef.current)
+                        }
+                        sliderTimerRef.current = window.setTimeout(() => {
+                          if (selectedTheme) {
+                            loadGraphByTheme(selectedTheme)
+                          } else {
+                            loadGraph()
+                          }
+                        }, 400)
+                      }}
+                      style={{ flex: 1 }}
+                    />
+                    <span style={{ fontSize: 13, color: 'var(--text-secondary)', minWidth: 40, textAlign: 'right' }}>
+                      {nodeLimit}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8, marginBottom: 0 }}>
+                    拖动后自动重新加载
+                  </p>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={buildCorrelationEdges}
+                    disabled={isLoading}
+                    style={{ marginTop: 12, width: '100%', fontSize: 12 }}
+                  >
+                    {isLoading ? '构建中...' : '重建相似度关联'}
+                  </button>
+                </div>
+
+                <div className="card-header" style={{ marginTop: 8 }}>
                   <h3 className="card-title">主题筛选</h3>
                 </div>
                 <div className="card-body" style={{ paddingBottom: 12, borderBottom: '1px solid var(--border-color)' }}>
@@ -842,6 +941,28 @@ export default function App() {
                               <span>{selectedElement.target}</span>
                             </div>
                           </div>
+                        </div>
+                      )}
+
+                      {selectedElement.type === 'node' && selectedElement.nodeType === 'NewsItem' && (
+                        <div className="detail-section">
+                          <div className="detail-section-title">新闻全文</div>
+                          {selectedElement.docDetail ? (
+                            <div style={{
+                              fontSize: 13,
+                              lineHeight: 1.7,
+                              color: 'var(--text-secondary)',
+                              maxHeight: 280,
+                              overflowY: 'auto',
+                              padding: 12,
+                              background: 'rgba(255,255,255,0.03)',
+                              borderRadius: 8,
+                            }}>
+                              {selectedElement.docDetail.text}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>加载中...</div>
+                          )}
                         </div>
                       )}
 

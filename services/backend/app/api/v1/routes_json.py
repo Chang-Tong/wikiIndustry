@@ -255,7 +255,7 @@ async def _process_batch(
 
                 correlation_service = CorrelationMiningService(neo4j)
                 corr_result = await correlation_service.create_correlation_edges(
-                    min_score=0.3,
+                    min_score=0.05,
                     use_vector=True,
                 )
                 logger.info(

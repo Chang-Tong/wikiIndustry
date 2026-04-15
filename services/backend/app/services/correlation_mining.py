@@ -612,8 +612,12 @@ class CorrelationMiningService:
             logger.info("强制使用 Ollama embedding 进行向量化...")
 
         # First, ensure all embeddings are generated
-        emb_stats = await self.generate_embeddings()
-        logger.info(f"Embedding generation: {emb_stats}")
+        try:
+            emb_stats = await self.generate_embeddings()
+            logger.info(f"Embedding generation: {emb_stats}")
+        except Exception as e:
+            logger.warning(f"Embedding generation failed: {e}. Falling back to entity-only.")
+            emb_stats = {"processed": 0, "total": 0, "errors": [str(e)]}
 
         # Check if we have any embeddings
         news_with_emb = await self.neo4j.get_news_with_embeddings(limit=10)

@@ -69,7 +69,26 @@ _wait_for() {
 
 # 停止所有
 do_stop() {
-    echo -e "${BLUE}停止所有 Docker 服务...${NC}"
+    echo -e "${BLUE}停止所有服务...${NC}"
+    # 停止本地前后端进程
+    local pidfile
+    for pidfile in "$SCRIPT_DIR/.backend.pid" "$SCRIPT_DIR/.frontend.pid"; do
+        if [ -f "$pidfile" ]; then
+            local pid
+            pid=$(cat "$pidfile")
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "  ${YELLOW}停止本地进程 (PID: $pid)...${NC}"
+                kill "$pid" 2>/dev/null || true
+                sleep 1
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            rm -f "$pidfile"
+        fi
+    done
+    # 兜底
+    pkill -f "uvicorn app.main:app" 2>/dev/null || true
+    pkill -f "vite" 2>/dev/null || true
+    # 停止 Docker
     ${COMPOSE} down
     echo -e "${GREEN}已停止${NC}"
 }

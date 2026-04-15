@@ -225,18 +225,18 @@ class Neo4jClient:
     async def read_all_graph(
         self,
         *,
-        limit: int = 1000,
+        node_limit: int = 25,
         types: list[str] | None = None,
     ) -> tuple[list[GraphNode], list[GraphEdge]]:
         """读取所有图谱数据（限制数量避免过大）"""
-        log = QueryLog(query=READ_ALL_GRAPH, parameters={"limit": limit, "types": types})
+        log = QueryLog(query=READ_ALL_GRAPH, parameters={"node_limit": node_limit, "types": types})
         driver = self._require_driver()
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}
 
         try:
             async with driver.session() as session:
-                res = await session.run(READ_ALL_GRAPH, limit=limit, types=types)
+                res = await session.run(READ_ALL_GRAPH, node_limit=node_limit, types=types)
                 async for record in res:
                     source = record.get("source")
                     rel = record.get("rel")
@@ -586,31 +586,37 @@ class Neo4jClient:
 
         return results
 
-    async def get_nodes_by_theme(self, theme: str) -> tuple[list[GraphNode], list[GraphEdge]]:
+    async def get_nodes_by_theme(
+        self, theme: str, news_limit: int = 30
+    ) -> tuple[list[GraphNode], list[GraphEdge]]:
         """获取与指定主题相关的所有节点和边。"""
         driver = self._require_driver()
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}
 
-        # 查询主题相关的所有新闻节点及其关联实体
+        # 查询主题相关的所有新闻节点及其关联实体，限制新闻数量避免过大
         query = """
         // 找到主题标签
         MATCH (theme:Entity {type: 'ThemeTag', name: $theme})
-        // 找到所有相关新闻
+        // 找到相关新闻并限制数量
         MATCH (theme)-[:REL]-(news:Entity {type: 'NewsItem'})
-        // 找到新闻的所有关联实体
-        OPTIONAL MATCH (news)-[r:REL]-(related:Entity)
+        WITH theme, news
+        LIMIT $news_limit
+        // 找到新闻的所有关联实体（包括 REL 和 CORRELATED_WITH）
+        OPTIONAL MATCH (news)-[r:REL|CORRELATED_WITH]-(related:Entity)
         RETURN theme, news, r, related
         UNION
         // 同时包含其他与这些新闻相关的主题标签
         MATCH (theme:Entity {type: 'ThemeTag', name: $theme})-[:REL]-(news:Entity {type: 'NewsItem'})
+        WITH theme, news
+        LIMIT $news_limit
         MATCH (news)-[:REL]-(other_theme:Entity {type: 'ThemeTag'})
         WHERE other_theme.name <> $theme
         RETURN theme, news, null as r, other_theme as related
         """
 
         async with driver.session() as session:
-            result = await session.run(query, theme=theme)
+            result = await session.run(query, theme=theme, news_limit=news_limit)
             async for record in result:
                 theme_node = record.get("theme")
                 news = record.get("news")

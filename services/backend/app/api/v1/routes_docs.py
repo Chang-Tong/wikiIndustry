@@ -105,6 +105,27 @@ class CreateDocResponse(BaseModel):
     doc_id: str
 
 
+class DocDetailResponse(BaseModel):
+    doc_id: str
+    title: str
+    text: str
+    created_at: str
+
+
+@router.get("/docs/{doc_id}", response_model=DocDetailResponse)
+async def get_doc_detail(doc_id: str, request: Request) -> DocDetailResponse:
+    store: SqliteStore = request.app.state.store
+    row = store.get_doc(doc_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return DocDetailResponse(
+        doc_id=row.doc_id,
+        title=row.title,
+        text=row.text,
+        created_at=row.created_at,
+    )
+
+
 @router.post("/docs", response_model=CreateDocResponse)
 async def create_doc(payload: CreateDocRequest, request: Request) -> CreateDocResponse:
     store: SqliteStore = request.app.state.store
@@ -1710,7 +1731,7 @@ async def qa_rag(payload: RAGAskRequest, request: Request) -> RAGAskResponse:
             if payload.doc_id:
                 nodes, edges = await neo4j.read_graph_by_doc_id(doc_id=payload.doc_id)
             else:
-                nodes, edges = await neo4j.read_all_graph(limit=1000)
+                nodes, edges = await neo4j.read_all_graph(node_limit=1000)
         except Exception:
             pass
 

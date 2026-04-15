@@ -729,13 +729,14 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
 
     async def upsert_extraction_into_graph(*, extracted: ExtractionResult) -> None:
         for ent in extracted.entities:
-            nid = stable_id(doc_id, ent.type, ent.name)
+            # Global entity ID based on type+name for cross-doc sharing
+            nid = stable_id(ent.type, ent.name)
             name_to_id.setdefault(ent.name, nid)
             _upsert_node(nodes, node_id=nid, name=ent.name, type_=ent.type, doc_id=doc_id)
 
         for rel in extracted.relations:
-            sid = name_to_id.get(rel.source) or stable_id(doc_id, "Entity", rel.source)
-            tid = name_to_id.get(rel.target) or stable_id(doc_id, "Entity", rel.target)
+            sid = name_to_id.get(rel.source) or stable_id("Entity", rel.source)
+            tid = name_to_id.get(rel.target) or stable_id("Entity", rel.target)
 
             _upsert_node(nodes, node_id=sid, name=rel.source, type_="Entity", doc_id=doc_id)
             _upsert_node(nodes, node_id=tid, name=rel.target, type_="Entity", doc_id=doc_id)
@@ -806,7 +807,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                 _upsert_node(nodes, node_id=news_id, name=news_name, type_="NewsItem", doc_id=doc_id)
 
                 if site:
-                    site_id = stable_id(doc_id, "Organization", site)
+                    site_id = stable_id("Organization", site)
                     _upsert_node(nodes, node_id=site_id, name=site, type_="Organization", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -819,7 +820,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         evidence=None,
                     )
                 if top_category:
-                    top_cat_id = stable_id(doc_id, "Category", top_category)
+                    top_cat_id = stable_id("Category", top_category)
                     _upsert_node(nodes, node_id=top_cat_id, name=top_category, type_="Category", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -832,7 +833,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         evidence=None,
                     )
                 if sub_category:
-                    sub_cat_id = stable_id(doc_id, "SubCategory", sub_category)
+                    sub_cat_id = stable_id("SubCategory", sub_category)
                     _upsert_node(nodes, node_id=sub_cat_id, name=sub_category, type_="SubCategory", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -845,7 +846,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         evidence=None,
                     )
                 if url:
-                    url_id = stable_id(doc_id, "URL", url)
+                    url_id = stable_id("URL", url)
                     _upsert_node(nodes, node_id=url_id, name=url, type_="URL", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -858,7 +859,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         evidence=None,
                     )
                 if date:
-                    date_id = stable_id(doc_id, "Time", date)
+                    date_id = stable_id("Time", date)
                     _upsert_node(nodes, node_id=date_id, name=date, type_="Time", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -911,7 +912,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         return
                     k = f"{dim}:{v}"
                     label_keys.add(k)
-                    nid = stable_id(doc_id, node_type, v)
+                    nid = stable_id(node_type, v)
                     label_key_to_node_id[k] = nid
                     label_key_to_news.setdefault(k, set()).add(news_id)
                     _upsert_node(nodes, node_id=nid, name=v, type_=node_type, doc_id=doc_id)
@@ -926,7 +927,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                         evidence=None,
                     )
 
-                type_id = stable_id(doc_id, "ContentType", content_type)
+                type_id = stable_id("ContentType", content_type)
                 _upsert_node(nodes, node_id=type_id, name=content_type, type_="ContentType", doc_id=doc_id)
                 _upsert_edge(
                     edges,
@@ -946,7 +947,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
                 dept_set: set[str] = set()
                 for dep in departments[:10]:
                     dept_set.add(dep)
-                    dep_id = stable_id(doc_id, "Organization", dep)
+                    dep_id = stable_id("Organization", dep)
                     _upsert_node(nodes, node_id=dep_id, name=dep, type_="Organization", doc_id=doc_id)
                     _upsert_edge(
                         edges,
@@ -1002,7 +1003,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
 
                     ent_set: set[str] = set()
                     for ent in extracted.entities:
-                        ent_id = name_to_id.get(ent.name) or stable_id(doc_id, ent.type, ent.name)
+                        ent_id = name_to_id.get(ent.name) or stable_id(ent.type, ent.name)
                         ent_set.add(ent_id)
                         entity_to_news.setdefault(ent_id, set()).add(news_id)
                         _upsert_edge(

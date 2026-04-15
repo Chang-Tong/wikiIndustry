@@ -129,8 +129,8 @@ class GraphBuilder:
         # Map OneKE types to Neo4j types
         mapped_type = self._map_entity_type(node_type)
 
-        # Generate stable ID
-        node_id = self._stable_id(doc_id, mapped_type, name)
+        # Generate stable ID globally by type+name so same entity is shared across docs
+        node_id = self._stable_id(mapped_type, name)
 
         return GraphNode(
             id=node_id,

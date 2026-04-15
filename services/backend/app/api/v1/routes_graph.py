@@ -167,11 +167,13 @@ class GraphResponse(BaseModel):
 async def get_graph(
     request: Request,
     doc_id: str | None = Query(default=None, min_length=1),
+    node_limit: int = Query(default=25, ge=1, le=200, description="Maximum nodes to return"),
 ) -> GraphResponse:
     """获取知识图谱数据
 
     Args:
         doc_id: 可选，指定文档ID获取特定图谱；不传则返回所有数据
+        node_limit: 返回的最大节点数量，默认25
     """
     neo4j: Neo4jClient | None = request.app.state.neo4j
     if neo4j is None:
@@ -181,7 +183,7 @@ async def get_graph(
         if doc_id:
             nodes, edges = await neo4j.read_graph_by_doc_id(doc_id=doc_id)
         else:
-            nodes, edges = await neo4j.read_all_graph(limit=10000)
+            nodes, edges = await neo4j.read_all_graph(node_limit=node_limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -302,11 +304,13 @@ async def get_theme_tags(
 async def get_graph_by_theme(
     request: Request,
     theme: str = Path(..., min_length=1, description="Theme tag name to filter by"),
+    news_limit: int = Query(default=30, ge=1, le=200, description="Maximum news items to include"),
 ) -> ThemeGraphResponse:
     """获取与指定主题相关的所有节点和边。
 
     Args:
         theme: 主题标签名称，如"义务教育"
+        news_limit: 最多包含的新闻数量，避免数据过大
 
     Returns:
         主题相关的图谱数据，包含新闻节点和所有关联实体
@@ -316,7 +320,7 @@ async def get_graph_by_theme(
         raise HTTPException(status_code=503, detail="Neo4j not available")
 
     try:
-        nodes, edges = await neo4j.get_nodes_by_theme(theme=theme)
+        nodes, edges = await neo4j.get_nodes_by_theme(theme=theme, news_limit=news_limit)
 
         # 统计信息
         news_nodes = [n for n in nodes if n.type == "NewsItem"]
