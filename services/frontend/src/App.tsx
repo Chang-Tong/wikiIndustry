@@ -122,6 +122,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [uploadResult, setUploadResult] = useState<IngestResponse | null>(null)
   const [uploadMode, setUploadMode] = useState<'incremental' | 'overwrite'>('incremental')
+  const [uploadProgress, setUploadProgress] = useState<number>(0)
 
   // Graph state
   const [graphData, setGraphData] = useState<GraphData | null>(null)
@@ -510,6 +511,7 @@ export default function App() {
     if (!selectedFile) return
 
     setIsLoading(true)
+    setUploadProgress(0)
     try {
       const formData = new FormData()
       formData.append('file', selectedFile)
@@ -517,7 +519,13 @@ export default function App() {
       formData.append('mode', uploadMode)
 
       const { data } = await api.post<IngestResponse>('/api/v1/json/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            setUploadProgress(percent)
+          }
+        }
       })
 
       setUploadResult(data)
@@ -529,6 +537,7 @@ export default function App() {
       alert('上传失败，请检查服务是否正常运行')
     } finally {
       setIsLoading(false)
+      setUploadProgress(0)
     }
   }
 
@@ -688,6 +697,33 @@ export default function App() {
                         </>
                       )}
                     </button>
+
+                    {isLoading && uploadProgress > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        <div style={{
+                          height: 6,
+                          background: 'rgba(255,255,255,0.1)',
+                          borderRadius: 3,
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            width: `${uploadProgress}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #0A84FF, #64D2FF)',
+                            borderRadius: 3,
+                            transition: 'width 0.2s ease',
+                          }} />
+                        </div>
+                        <p style={{
+                          marginTop: 8,
+                          fontSize: 12,
+                          color: 'var(--text-secondary)',
+                          textAlign: 'center',
+                        }}>
+                          上传进度: {uploadProgress}%
+                        </p>
+                      </div>
+                    )}
                   </>
                 )}
 
