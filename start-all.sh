@@ -219,6 +219,24 @@ OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b
 REQUIRE_OLLAMA_EMBEDDING=true
 EOF
         echo -e "${YELLOW}注意: 请编辑 .env 填入真实的 API Key${NC}"
+    else
+        # 检查并修正 .env 中的 Docker 内部地址为本地地址
+        local needs_fix=0
+        if grep -q 'NEO4J_URI=bolt://neo4j:' .env 2>/dev/null; then
+            needs_fix=1
+            sed -i '' 's|^NEO4J_URI=.*|NEO4J_URI=bolt://localhost:7687|' .env
+        fi
+        if grep -q 'ONEKE_BASE_URL=http://oneke:' .env 2>/dev/null; then
+            needs_fix=1
+            sed -i '' 's|^ONEKE_BASE_URL=.*|ONEKE_BASE_URL=http://localhost:8010|' .env
+        fi
+        if grep -q 'OLLAMA_BASE_URL=http://host.docker.internal:' .env 2>/dev/null; then
+            needs_fix=1
+            sed -i '' 's|^OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://localhost:11434/v1|' .env
+        fi
+        if [ "$needs_fix" -eq 1 ]; then
+            echo -e "${YELLOW}已自动将 .env 中的 Docker 内部地址修正为本地开发地址${NC}"
+        fi
     fi
 
     export $(grep -v '^#' .env | xargs)
