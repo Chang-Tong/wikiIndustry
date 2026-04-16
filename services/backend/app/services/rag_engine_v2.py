@@ -120,11 +120,6 @@ class AdaptiveRAGEngine:
     5. 生成最终回答
     """
 
-    # 类级 Schema 缓存，避免每次请求都重新 discovery
-    _schema_cache: dict[str, Any] | None = None
-    _schema_cache_time: float = 0.0
-    _SCHEMA_CACHE_TTL: float = 300.0  # 5 分钟
-
     def __init__(
         self,
         neo4j_client: Any | None = None,
@@ -193,14 +188,7 @@ class AdaptiveRAGEngine:
         return await self._generate_final_answer(context, query_plans)
 
     async def _discover_schema(self) -> dict[str, Any]:
-        """动态发现图谱 Schema - 带缓存避免重复查询"""
-        now = time.time()
-        if (
-            AdaptiveRAGEngine._schema_cache is not None
-            and (now - AdaptiveRAGEngine._schema_cache_time) < AdaptiveRAGEngine._SCHEMA_CACHE_TTL
-        ):
-            return dict(AdaptiveRAGEngine._schema_cache)
-
+        """动态发现图谱 Schema - 不预设任何结构"""
         driver = self._get_neo4j_driver()
         if not driver:
             return {}
@@ -211,15 +199,12 @@ class AdaptiveRAGEngine:
             node_samples = await self._get_node_samples(session, labels[:MAX_LABEL_SAMPLES])
             type_distribution = await self._get_type_distribution(session)
 
-            schema = {
+            return {
                 "labels": labels,
                 "relationship_types": rel_types,
                 "node_samples": node_samples,
                 "type_distribution": type_distribution,
             }
-            AdaptiveRAGEngine._schema_cache = dict(schema)
-            AdaptiveRAGEngine._schema_cache_time = now
-            return schema
 
     async def _get_node_labels(self, session: Any) -> list[str]:
         """获取所有节点标签"""
@@ -393,21 +378,21 @@ class AdaptiveRAGEngine:
 【重要提示 - 图谱结构】
 1. 所有节点的标签都是 "Entity"，不同类型用 "type" 属性区分
 2. 节点名称存储在 "name" 属性中（不是 label）
-3. 数据库中实际存在的 type 值（示例）：
-   - NewsItem: 新闻标题
-   - Organization: 组织机构（如来源网站）
-   - Entity: 通用实体（OneKE 提取的未分类实体）
-   - Time: 时间信息
-   - ThemeTag/ProvinceTag/CityTag/IndustryTag: 各类标签
+3. 数据库中实际存在的 type 值：
+   - NewsItem(10条): 新闻标题，如"上海市推进义务教育优质均衡发展"
+   - Organization(4条): 组织机构，如"教育部官网"、"科技部官网"
+   - Entity(134条): 通用实体，如"义务教育"、"教育信息化"
+   - Time(10条): 时间信息
 4. 关系类型：REL(OneKE提取的关系), CORRELATED_WITH(相似度计算的关系)
 5. 查询策略：
    - 政策信息通常在 NewsItem 中
+   - 组织机构名称通常是"XX部官网"而不是"XX部"
    - 优先使用 CONTAINS 进行模糊匹配，不要假设精确值存在
    - 如果找不到特定类型，尝试在 Entity 类型中搜索
-6. 查询示例（将"关键词"替换为实际查询词）：
-   - MATCH (n:Entity {{type: 'NewsItem'}}) WHERE n.name CONTAINS '关键词' RETURN n
-   - MATCH (n:Entity)-[r:REL|CORRELATED_WITH]-(m:Entity) WHERE n.name CONTAINS '关键词' RETURN n, r, m
-   - MATCH (n:Entity {{type: 'Organization'}}) WHERE n.name CONTAINS '关键词' RETURN n
+6. 查询示例：
+   - MATCH (n:Entity {{type: 'NewsItem'}}) WHERE n.name CONTAINS '义务教育' RETURN n
+   - MATCH (n:Entity)-[r:REL|CORRELATED_WITH]-(m:Entity) WHERE n.name CONTAINS '浙江' RETURN n, r, m
+   - MATCH (n:Entity {{type: 'Organization'}}) WHERE n.name CONTAINS '教育部' RETURN n
 
 请用 JSON 格式输出你的思考：
 {{
@@ -658,24 +643,23 @@ class AdaptiveRAGEngine:
 
         try:
             response = await self._call_llm(prompt)
-            # 优先尝试 JSON 解析（兼容旧逻辑）
             result = extract_json_from_response(response)
 
-            if result and ("answer" in result or "reasoning" in result):
+            if not result:
+                # 如果无法解析 JSON，直接使用 LLM 返回的文本
                 return RAGAnswerV2(
-                    answer=str(result.get("answer", "")),
-                    reasoning_process=str(result.get("reasoning", "")),
+                    answer=response[:1000],  # 限制长度
+                    reasoning_process="LLM did not return valid JSON format",
                     sources=context.retrieved_data[:MAX_SOURCES_IN_RESPONSE],
-                    confidence=str(result.get("confidence", "medium")),
+                    confidence="medium",
                     query_plans=query_plans,
                 )
 
-            # Markdown 格式：直接使用全文作为 answer
             return RAGAnswerV2(
-                answer=response.strip(),
-                reasoning_process="",
+                answer=str(result.get("answer", "生成回答失败")),
+                reasoning_process=str(result.get("reasoning", "")),
                 sources=context.retrieved_data[:MAX_SOURCES_IN_RESPONSE],
-                confidence="medium",
+                confidence=str(result.get("confidence", "low")),
                 query_plans=query_plans,
             )
         except Exception as e:
@@ -750,41 +734,30 @@ class AdaptiveRAGEngine:
 
     def _build_final_answer_prompt(self, context: RetrievalContext) -> str:
         """构建最终回答的 prompt"""
+        # 将数据格式化为 LLM 可读的文本
         data_str = self._format_data_for_llm(context.retrieved_data[:context.max_results])
 
-        return f"""基于以下检索结果，回答用户问题。
+        return f"""基于以下检索结果，回答问题。
 
 用户问题：{context.question}
 
 检索结果：
 {data_str}
 
-任务要求：
+要求：
 1. 仔细阅读检索结果中的每条信息
 2. 只基于提供的数据回答，不要编造
-3. 如果不确定，明确说明"无法确定"
+3. 如果不确定，明确说明
 4. 引用来源时标注 [数字]
+5. 展示你的推理过程
 
-回答时必须包含以下四个部分（使用 Markdown 标题）：
-
-## 直接答案
-用 2-4 句话给出核心结论，不要绕弯子。
-
-## 详细分析
-分点列出支持该结论的关键信息。每一点都必须引用具体的实体、关系或文本片段作为证据。
-
-## 数据依据
-以 Markdown 表格形式列出引用的关键来源（最多 10 条）。
-| 序号 | 来源类型 | 名称/关系 | 说明 |
-|------|----------|-----------|------|
-
-## 信息缺口
-明确指出哪些子问题在现有数据中找不到答案，禁止编造。
-
-约束：
-- 禁止输出 "根据提供的检索结果..." 这类套话
-- 禁止编造不存在的数据
-- 如果有定量问题，必须基于数据依据中的条目计数"""
+请用 JSON 格式输出：
+{{
+  "reasoning": "你的推理过程...",
+  "answer": "最终回答...",
+  "confidence": "high|medium|low",
+  "uncertainties": ["任何不确定的地方"]
+}}"""
 
     def _summarize_retrieved(self, data: list[dict[str, Any]]) -> str:
         """总结已检索的数据（用于自我修正）"""
@@ -815,11 +788,11 @@ class AdaptiveRAGEngine:
                 json={
                     "model": settings.openai_model,
                     "messages": [
-                        {"role": "system", "content": "You are a helpful assistant. Always respond in valid JSON format when asked, otherwise use Markdown."},
+                        {"role": "system", "content": "You are a helpful assistant. Always respond in valid JSON format."},
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 4000,
+                    "max_tokens": 2000,
                 },
             )
             response.raise_for_status()

@@ -173,6 +173,7 @@ export default function App() {
   const [selectedRelTypes, setSelectedRelTypes] = useState<string[]>([])
   const [availableRelTypes, setAvailableRelTypes] = useState<string[]>([])
   const [nodeLimit, setNodeLimit] = useState<number>(25)
+  const [useVector, setUseVector] = useState<boolean>(true)
   const graphRef = useRef<Graph | null>(null)
   const graphContainerRef = useRef<HTMLDivElement>(null)
   const sliderTimerRef = useRef<number | null>(null)
@@ -272,7 +273,10 @@ export default function App() {
 
   // Initialize G6 graph when switching to graph tab
   useEffect(() => {
-    if (activeTab === 'graph' && graphContainerRef.current && graphData && !graphRef.current) {
+    let wheelHandler: ((e: WheelEvent) => void) | null = null
+    const container = graphContainerRef.current
+
+    if (activeTab === 'graph' && container && graphData && !graphRef.current) {
       const nodes = graphData.elements.nodes.map(n => ({
         id: n.data.id,
         label: `${n.data.label || n.data.id} (${n.data.type || 'Entity'})`,
@@ -394,7 +398,7 @@ export default function App() {
         },
         behaviors: [
           { type: 'drag-canvas' },
-          { type: 'zoom-canvas', sensitivity: 1.2 },
+          { type: 'zoom-canvas', sensitivity: 0.6 },
           { type: 'drag-element' },
         ],
       })
@@ -404,6 +408,12 @@ export default function App() {
       }).catch((err: Error) => {
         console.error('Graph render failed:', err)
       })
+
+      // 阻止画布区域滚轮事件冒泡到页面，避免缩放时页面跟着滚动
+      wheelHandler = (e: WheelEvent) => {
+        e.preventDefault()
+      }
+      container?.addEventListener('wheel', wheelHandler, { passive: false })
 
       // Handle previous selection clearing when new node is clicked
       const handleNodeSelect = (nodeId: string) => {
@@ -489,6 +499,9 @@ export default function App() {
     }
 
     return () => {
+      if (wheelHandler) {
+        container?.removeEventListener('wheel', wheelHandler)
+      }
       if (graphRef.current) {
         graphRef.current.destroy()
         graphRef.current = null
@@ -552,10 +565,11 @@ export default function App() {
   const buildCorrelationEdges = useCallback(async () => {
     try {
       setIsLoading(true)
+      const modeText = useVector ? '混合相似度（实体+向量）' : '实体相似度（Jaccard）'
       const { data } = await api.post<{ created_edges: number; message: string }>(
-        '/api/v1/correlations/build-edges?min_score=0.05&use_vector=true'
+        `/api/v1/correlations/build-edges?min_score=0.05&use_vector=${useVector}`
       )
-      alert(`相似度关联构建完成：${data.message}`)
+      alert(`相似度关联构建完成【${modeText}】：${data.message}`)
       if (selectedTheme) {
         await loadGraphByTheme(selectedTheme)
       } else {
@@ -567,7 +581,7 @@ export default function App() {
     } finally {
       setIsLoading(false)
     }
-  }, [loadGraph, loadGraphByTheme, selectedTheme])
+  }, [loadGraph, loadGraphByTheme, selectedTheme, useVector])
 
   // Load theme tags when graph tab is active
   useEffect(() => {
@@ -1078,13 +1092,74 @@ export default function App() {
                   <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8, marginBottom: 0 }}>
                     拖动后自动重新加载
                   </p>
+
+                  {/* 相似度模式切换 */}
+                  <div style={{ marginTop: 12, padding: 10, background: 'rgba(255,255,255,0.03)', borderRadius: 8, border: '1px solid var(--border-color)' }}>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      相似度计算模式
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <label
+                        style={{
+                          flex: 1,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          border: `1px solid ${!useVector ? '#06b6d4' : 'var(--border-color)'}`,
+                          background: !useVector ? 'rgba(6,182,212,0.12)' : 'transparent',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          color: !useVector ? '#22d3ee' : 'var(--text-secondary)',
+                          textAlign: 'center',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="simMode"
+                          checked={!useVector}
+                          onChange={() => setUseVector(false)}
+                          style={{ display: 'none' }}
+                        />
+                        实体相似度
+                      </label>
+                      <label
+                        style={{
+                          flex: 1,
+                          padding: '8px 10px',
+                          borderRadius: 6,
+                          border: `1px solid ${useVector ? '#a78bfa' : 'var(--border-color)'}`,
+                          background: useVector ? 'rgba(167,139,250,0.12)' : 'transparent',
+                          cursor: 'pointer',
+                          fontSize: 12,
+                          color: useVector ? '#c4b5fd' : 'var(--text-secondary)',
+                          textAlign: 'center',
+                          transition: 'all 0.2s',
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="simMode"
+                          checked={useVector}
+                          onChange={() => setUseVector(true)}
+                          style={{ display: 'none' }}
+                        />
+                        混合相似度
+                      </label>
+                    </div>
+                    <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8, marginBottom: 0 }}>
+                      {!useVector
+                        ? '基于共享实体的 Jaccard 相似度，严格但召回率低'
+                        : '实体相似度 60% + 向量嵌入 40%，能发现语义相关的新闻'}
+                    </p>
+                  </div>
+
                   <button
                     className="btn btn-secondary"
                     onClick={buildCorrelationEdges}
                     disabled={isLoading}
                     style={{ marginTop: 12, width: '100%', fontSize: 12 }}
                   >
-                    {isLoading ? '构建中...' : '重建相似度关联'}
+                    {isLoading ? '构建中...' : `重建相似度关联 (${useVector ? '混合' : '实体'})`}
                   </button>
                 </div>
 
@@ -1300,7 +1375,7 @@ export default function App() {
                       </span>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingLeft: 40 }}>
-                      基于实体+向量相似度计算，连接相关新闻
+                      {useVector ? '基于实体+向量混合相似度计算，连接语义相关新闻' : '基于共享实体的 Jaccard 相似度计算，连接有共同实体的新闻'}
                     </div>
                   </div>
                 </div>
@@ -1378,9 +1453,11 @@ export default function App() {
                           opacity: 0.8
                         }}>
                           <p style={{ marginBottom: 4 }}>来源: {msg.sources.length} 个</p>
-                          {msg.sources.slice(0, 3).map((s, i) => (
-                            <p key={i} style={{ margin: 0 }}>• {s.name}</p>
-                          ))}
+                          <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+                            {msg.sources.map((s, i) => (
+                              <p key={i} style={{ margin: 0 }}>• {s.name}</p>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>

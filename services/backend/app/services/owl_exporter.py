@@ -231,8 +231,8 @@ class OWLExporter:
             # Get all entities
             if doc_id:
                 entity_query = """
-                MATCH (news:Entity {type: 'NewsItem', doc_id: $doc_id})-[:REL]-(e:Entity)
-                RETURN DISTINCT e.id as id, e.name as name, e.type as type, e.doc_id as doc_id
+                MATCH (e:Entity {doc_id: $doc_id})
+                RETURN e.id as id, e.name as name, e.type as type, e.doc_id as doc_id
                 """
                 entity_result = await session.run(entity_query, doc_id=doc_id)
             else:
@@ -275,8 +275,8 @@ class OWLExporter:
             # Get all relationships
             if doc_id:
                 rel_query = """
-                MATCH (news:Entity {type: 'NewsItem', doc_id: $doc_id})-[r:REL]-(e:Entity)
-                RETURN news.id as source_id, e.id as target_id,
+                MATCH (s:Entity {doc_id: $doc_id})-[r:REL]->(t:Entity {doc_id: $doc_id})
+                RETURN s.id as source_id, t.id as target_id,
                        r.type as rel_type, r.label as rel_label
                 """
                 rel_result = await session.run(rel_query, doc_id=doc_id)
@@ -369,7 +369,7 @@ class OWLExporter:
             async with driver.session() as session:
                 # Get entities
                 if doc_id:
-                    query = "MATCH (news:Entity {type: 'NewsItem', doc_id: $doc_id})-[:REL]-(e:Entity) RETURN DISTINCT e LIMIT 500"
+                    query = "MATCH (e:Entity {doc_id: $doc_id}) RETURN e LIMIT 500"
                     result = await session.run(query, doc_id=doc_id)
                 else:
                     query = "MATCH (e:Entity) RETURN e LIMIT 500"

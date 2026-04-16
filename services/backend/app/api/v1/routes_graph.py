@@ -183,7 +183,7 @@ async def get_graph(
         if doc_id:
             nodes, edges = await neo4j.read_graph_by_doc_id(doc_id=doc_id)
         else:
-            nodes, edges = await neo4j.read_all_graph(node_limit=node_limit)
+            nodes, edges = await neo4j.read_all_graph(limit=node_limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -58,7 +58,6 @@ class GraphNode:
     name: str
     type: str
     doc_id: str
-    properties: dict[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 @dataclass(frozen=True)
@@ -70,7 +69,6 @@ class GraphEdge:
     label: str
     doc_id: str
     evidence: str | None
-    properties: dict[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
 
 class Neo4jClient:
@@ -78,7 +76,7 @@ class Neo4jClient:
         self.uri = uri
         self.user = user
         self.password = password
-        self._driver: AsyncDriver = AsyncGraphDatabase.driver(self.uri, auth=(self.user, self.password))
+        self._driver: AsyncDriver | None = None
         self.query_logs: list[QueryLog] = []
 
     def get_query_logs(self) -> list[dict[str, Any]]:
@@ -90,13 +88,13 @@ class Neo4jClient:
         self.query_logs = []
 
     async def open(self) -> None:
+        self._driver = AsyncGraphDatabase.driver(self.uri, auth=(self.user, self.password))
         await self._driver.verify_connectivity()
 
     async def close(self) -> None:
-        await self._driver.close()
-
-    def _require_driver(self) -> AsyncDriver:
-        return self._driver
+        if self._driver is not None:
+            await self._driver.close()
+            self._driver = None
 
     async def ensure_constraints(self) -> None:
         driver = self._require_driver()
@@ -152,7 +150,6 @@ class Neo4jClient:
                                 name=str(source.get("name")),
                                 type=str(source.get("type")),
                                 doc_id=str(source.get("doc_id")),
-                                properties=dict(source),
                             )
 
                     # 处理 REL 关系的目标实体
@@ -164,7 +161,6 @@ class Neo4jClient:
                                 name=str(target.get("name")),
                                 type=str(target.get("type")),
                                 doc_id=str(target.get("doc_id")),
-                                properties=dict(target),
                             )
 
                     # 处理 CORRELATED_WITH 关系的目标实体
@@ -176,7 +172,6 @@ class Neo4jClient:
                                 name=str(corr_target.get("name")),
                                 type=str(corr_target.get("type")),
                                 doc_id=str(corr_target.get("doc_id")),
-                                properties=dict(corr_target),
                             )
 
                     # 处理 REL 边
@@ -191,7 +186,6 @@ class Neo4jClient:
                                 label=str(rel.get("label")),
                                 doc_id=str(rel.get("doc_id")),
                                 evidence=str(rel.get("evidence")) if rel.get("evidence") is not None else None,
-                                properties=dict(rel),
                             )
 
                     # 处理 CORRELATED_WITH 边
@@ -209,7 +203,6 @@ class Neo4jClient:
                                 label=f"相似度: {score:.2f}" if score else "相似关联",
                                 doc_id=str(corr_rel.get("doc_id")),
                                 evidence=f"score: {score}, type: {corr_type}",
-                                properties=dict(corr_rel),
                             )
                 log.result_count = len(nodes) + len(edges)
         except Exception as e:
@@ -225,18 +218,18 @@ class Neo4jClient:
     async def read_all_graph(
         self,
         *,
-        node_limit: int = 25,
+        limit: int = 1000,
         types: list[str] | None = None,
     ) -> tuple[list[GraphNode], list[GraphEdge]]:
         """读取所有图谱数据（限制数量避免过大）"""
-        log = QueryLog(query=READ_ALL_GRAPH, parameters={"node_limit": node_limit, "types": types})
+        log = QueryLog(query=READ_ALL_GRAPH, parameters={"limit": limit, "types": types})
         driver = self._require_driver()
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}
 
         try:
             async with driver.session() as session:
-                res = await session.run(READ_ALL_GRAPH, node_limit=node_limit, types=types)
+                res = await session.run(READ_ALL_GRAPH, limit=limit, types=types)
                 async for record in res:
                     source = record.get("source")
                     rel = record.get("rel")
@@ -244,39 +237,33 @@ class Neo4jClient:
 
                     if source is not None:
                         sid = str(source.get("id"))
-                        if sid not in nodes:
-                            nodes[sid] = GraphNode(
-                                id=sid,
-                                name=str(source.get("name")),
-                                type=str(source.get("type")),
-                                doc_id=str(source.get("doc_id")),
-                                properties=dict(source),
-                            )
+                        nodes[sid] = GraphNode(
+                            id=sid,
+                            name=str(source.get("name")),
+                            type=str(source.get("type")),
+                            doc_id=str(source.get("doc_id")),
+                        )
                     if target is not None:
                         tid = str(target.get("id"))
-                        if tid not in nodes:
-                            nodes[tid] = GraphNode(
-                                id=tid,
-                                name=str(target.get("name")),
-                                type=str(target.get("type")),
-                                doc_id=str(target.get("doc_id")),
-                                properties=dict(target),
-                            )
+                        nodes[tid] = GraphNode(
+                            id=tid,
+                            name=str(target.get("name")),
+                            type=str(target.get("type")),
+                            doc_id=str(target.get("doc_id")),
+                        )
                     if rel is not None:
                         rid = str(rel.get("id"))
                         source_id = str(source.get("id")) if source is not None else ""
                         target_id = str(target.get("id")) if target is not None else ""
-                        if rid not in edges:
-                            edges[rid] = GraphEdge(
-                                id=rid,
-                                source_id=source_id,
-                                target_id=target_id,
-                                type=str(rel.get("type")),
-                                label=str(rel.get("label")),
-                                doc_id=str(rel.get("doc_id")),
-                                evidence=str(rel.get("evidence")) if rel.get("evidence") is not None else None,
-                                properties=dict(rel),
-                            )
+                        edges[rid] = GraphEdge(
+                            id=rid,
+                            source_id=source_id,
+                            target_id=target_id,
+                            type=str(rel.get("type")),
+                            label=str(rel.get("label")),
+                            doc_id=str(rel.get("doc_id")),
+                            evidence=str(rel.get("evidence")) if rel.get("evidence") is not None else None,
+                        )
                 log.result_count = len(nodes) + len(edges)
         except Exception as e:
             log.error = str(e)
@@ -370,113 +357,6 @@ class Neo4jClient:
                 self.query_logs.append(log)
 
         return stats
-
-    async def get_schema_summary(self) -> dict[str, Any]:
-        """返回供 LLM 使用的轻量级 Schema 摘要。"""
-        driver = self._require_driver()
-        summary: dict[str, Any] = {
-            "node_labels": [],
-            "node_types": [],
-            "rel_types": [],
-            "property_keys": [],
-            "samples": [],
-        }
-        async with driver.session() as session:
-            try:
-                result = await session.run("CALL db.labels() YIELD label RETURN collect(label) AS labels")
-                record = await result.single()
-                if record:
-                    summary["node_labels"] = record["labels"]
-            except Exception:
-                pass
-
-            try:
-                result = await session.run(
-                    "CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS types"
-                )
-                record = await result.single()
-                if record:
-                    summary["rel_types"] = record["types"]
-            except Exception:
-                pass
-
-            try:
-                result = await session.run(
-                    "CALL db.propertyKeys() YIELD propertyKey RETURN collect(propertyKey) AS keys LIMIT 50"
-                )
-                record = await result.single()
-                if record:
-                    summary["property_keys"] = record["keys"][:50]
-            except Exception:
-                pass
-
-            try:
-                result = await session.run(
-                    "MATCH (n:Entity) RETURN n.type AS type, count(*) AS cnt ORDER BY cnt DESC LIMIT 15"
-                )
-                types: list[dict[str, Any]] = []
-                async for record in result:
-                    types.append({"type": record["type"], "count": record["cnt"]})
-                summary["node_types"] = types
-            except Exception:
-                pass
-
-            try:
-                result = await session.run(
-                    "MATCH ()-[r:REL]->() RETURN r.type AS type, count(*) AS cnt ORDER BY cnt DESC LIMIT 15"
-                )
-                rel_types: list[dict[str, Any]] = []
-                async for record in result:
-                    rel_types.append({"type": record["type"], "count": record["cnt"]})
-                summary["rel_types_sample"] = rel_types
-            except Exception:
-                pass
-
-            try:
-                result = await session.run(
-                    """
-                    MATCH (n:Entity)-[r:REL]->(m:Entity)
-                    RETURN n.name AS source, n.type AS source_type, r.type AS rel_type,
-                           m.name AS target, m.type AS target_type
-                    LIMIT 5
-                    """
-                )
-                samples: list[dict[str, Any]] = []
-                async for record in result:
-                    samples.append(
-                        {
-                            "source": record["source"],
-                            "source_type": record["source_type"],
-                            "rel": record["rel_type"],
-                            "target": record["target"],
-                            "target_type": record["target_type"],
-                        }
-                    )
-                summary["samples"] = samples
-            except Exception:
-                pass
-        return summary
-
-    async def execute_cypher(
-        self, query: str, parameters: dict[str, Any] | None = None
-    ) -> list[dict[str, Any]]:
-        """执行任意 Cypher 查询并返回记录列表。"""
-        driver = self._require_driver()
-        log = QueryLog(query=query, parameters=parameters or {})
-        records: list[dict[str, Any]] = []
-        try:
-            async with driver.session() as session:
-                result = await session.run(query, parameters or {})
-                async for record in result:
-                    records.append(dict(record))
-                log.result_count = len(records)
-        except Exception as e:
-            log.error = str(e)
-            raise
-        finally:
-            log.end_time = time.time()
-            self.query_logs.append(log)
-        return records
 
     async def get_province_stats(self) -> dict[str, Any]:
         """获取省份统计信息"""
@@ -586,37 +466,31 @@ class Neo4jClient:
 
         return results
 
-    async def get_nodes_by_theme(
-        self, theme: str, news_limit: int = 30
-    ) -> tuple[list[GraphNode], list[GraphEdge]]:
+    async def get_nodes_by_theme(self, theme: str) -> tuple[list[GraphNode], list[GraphEdge]]:
         """获取与指定主题相关的所有节点和边。"""
         driver = self._require_driver()
         nodes: dict[str, GraphNode] = {}
         edges: dict[str, GraphEdge] = {}
 
-        # 查询主题相关的所有新闻节点及其关联实体，限制新闻数量避免过大
+        # 查询主题相关的所有新闻节点及其关联实体
         query = """
         // 找到主题标签
         MATCH (theme:Entity {type: 'ThemeTag', name: $theme})
-        // 找到相关新闻并限制数量
+        // 找到所有相关新闻
         MATCH (theme)-[:REL]-(news:Entity {type: 'NewsItem'})
-        WITH theme, news
-        LIMIT $news_limit
-        // 找到新闻的所有关联实体（包括 REL 和 CORRELATED_WITH）
-        OPTIONAL MATCH (news)-[r:REL|CORRELATED_WITH]-(related:Entity)
+        // 找到新闻的所有关联实体
+        OPTIONAL MATCH (news)-[r:REL]-(related:Entity)
         RETURN theme, news, r, related
         UNION
         // 同时包含其他与这些新闻相关的主题标签
         MATCH (theme:Entity {type: 'ThemeTag', name: $theme})-[:REL]-(news:Entity {type: 'NewsItem'})
-        WITH theme, news
-        LIMIT $news_limit
         MATCH (news)-[:REL]-(other_theme:Entity {type: 'ThemeTag'})
         WHERE other_theme.name <> $theme
         RETURN theme, news, null as r, other_theme as related
         """
 
         async with driver.session() as session:
-            result = await session.run(query, theme=theme, news_limit=news_limit)
+            result = await session.run(query, theme=theme)
             async for record in result:
                 theme_node = record.get("theme")
                 news = record.get("news")
@@ -847,213 +721,3 @@ class Neo4jClient:
             self.query_logs.append(log)
 
         return results
-
-    async def retrieve_subgraph_by_keywords(
-        self,
-        terms: list[str],
-        candidate_limit: int = 15,
-        expand_limit: int = 300,
-        doc_id: str | None = None,
-        rel_types: list[str] | None = None,
-    ) -> tuple[list[GraphNode], list[GraphEdge]]:
-        """基于关键词在Neo4j中检索候选节点并扩展1跳子图。
-
-        避免把全图拉到Python内存，直接在数据库层完成相关子图提取。
-        可通过 rel_types 限制优先扩展的关系类型。
-        """
-        driver = self._require_driver()
-        nodes: dict[str, GraphNode] = {}
-        edges: dict[str, GraphEdge] = {}
-
-        if not terms:
-            return [], []
-
-        query = """
-        UNWIND $terms AS term
-        MATCH (n:Entity)
-        WHERE n.name CONTAINS term
-          AND ($doc_id IS NULL OR n.doc_id = $doc_id)
-        WITH n, count(*) AS hit
-        ORDER BY hit DESC
-        LIMIT $candidate_limit
-        WITH collect(n) AS seeds
-        UNWIND seeds AS s
-        MATCH (s)-[r]-(m)
-        WHERE ($doc_id IS NULL OR m.doc_id = $doc_id)
-          AND ($rel_types IS NULL OR r.type IN $rel_types)
-        RETURN s, r, m
-        LIMIT $expand_limit
-        """
-
-        log = QueryLog(
-            query=query[:120],
-            parameters={"terms": terms, "candidate_limit": candidate_limit, "doc_id": doc_id, "rel_types": rel_types},
-        )
-
-        try:
-            async with driver.session() as session:
-                result = await session.run(
-                    query,
-                    terms=terms,
-                    candidate_limit=candidate_limit,
-                    expand_limit=expand_limit,
-                    doc_id=doc_id,
-                    rel_types=rel_types,
-                )
-                async for record in result:
-                    source = record.get("s")
-                    rel = record.get("r")
-                    target = record.get("m")
-
-                    if source is not None:
-                        sid = str(source.get("id"))
-                        if sid not in nodes:
-                            nodes[sid] = GraphNode(
-                                id=sid,
-                                name=str(source.get("name")),
-                                type=str(source.get("type")),
-                                doc_id=str(source.get("doc_id")),
-                                properties=dict(source),
-                            )
-                    if target is not None:
-                        tid = str(target.get("id"))
-                        if tid not in nodes:
-                            nodes[tid] = GraphNode(
-                                id=tid,
-                                name=str(target.get("name")),
-                                type=str(target.get("type")),
-                                doc_id=str(target.get("doc_id")),
-                                properties=dict(target),
-                            )
-                    if rel is not None and source is not None and target is not None:
-                        rid = str(rel.get("id"))
-                        if rid not in edges:
-                            edges[rid] = GraphEdge(
-                                id=rid,
-                                source_id=str(source.get("id")),
-                                target_id=str(target.get("id")),
-                                type=str(rel.get("type")),
-                                label=str(rel.get("label")),
-                                doc_id=str(rel.get("doc_id")),
-                                evidence=str(rel.get("evidence")) if rel.get("evidence") is not None else None,
-                                properties=dict(rel),
-                            )
-                log.result_count = len(nodes) + len(edges)
-        except Exception as e:
-            log.error = str(e)
-            raise
-        finally:
-            log.end_time = time.time()
-            self.query_logs.append(log)
-            logger.info(
-                f"Neo4j keyword subgraph: terms={terms[:3]}... | "
-                f"Duration: {log.duration_ms:.2f}ms | Results: {log.result_count}"
-            )
-
-        return list(nodes.values()), list(edges.values())
-
-    async def retrieve_subgraph_by_embedding(
-        self,
-        embedding: list[float],
-        min_score: float = 0.55,
-        top_n: int = 5,
-        expand_limit: int = 200,
-        doc_id: str | None = None,
-    ) -> tuple[list[GraphNode], list[GraphEdge]]:
-        """基于向量相似度找种子NewsItem并扩展1跳子图。"""
-        driver = self._require_driver()
-        nodes: dict[str, GraphNode] = {}
-        edges: dict[str, GraphEdge] = {}
-
-        query = """
-        MATCH (n:Entity {type: 'NewsItem'})
-        WHERE n.embedding IS NOT NULL
-          AND ($doc_id IS NULL OR n.doc_id = $doc_id)
-        WITH n,
-             reduce(dot = 0.0, i in range(0, size(n.embedding)-1) |
-                 dot + n.embedding[i] * $embedding[i]
-             ) as dot_product,
-             sqrt(reduce(sum = 0.0, x in n.embedding | sum + x^2)) as norm1,
-             sqrt(reduce(sum = 0.0, x in $embedding | sum + x^2)) as norm2
-        WITH n, dot_product, norm1, norm2,
-             CASE WHEN norm1 * norm2 = 0 THEN 0.0
-                  ELSE dot_product / (norm1 * norm2)
-             END as similarity
-        WHERE similarity >= $min_score
-        WITH n, similarity
-        ORDER BY similarity DESC
-        LIMIT $top_n
-        WITH collect(n) AS seeds
-        UNWIND seeds AS s
-        MATCH (s)-[r]-(m)
-        WHERE $doc_id IS NULL OR m.doc_id = $doc_id
-        RETURN s, r, m, s.doc_id as seed_doc_id, s.name as seed_title
-        LIMIT $expand_limit
-        """
-
-        log = QueryLog(
-            query=query[:120],
-            parameters={"min_score": min_score, "top_n": top_n, "doc_id": doc_id},
-        )
-
-        try:
-            async with driver.session() as session:
-                result = await session.run(
-                    query,
-                    embedding=embedding,
-                    min_score=min_score,
-                    top_n=top_n,
-                    expand_limit=expand_limit,
-                    doc_id=doc_id,
-                )
-                async for record in result:
-                    source = record.get("s")
-                    rel = record.get("r")
-                    target = record.get("m")
-
-                    if source is not None:
-                        sid = str(source.get("id"))
-                        if sid not in nodes:
-                            nodes[sid] = GraphNode(
-                                id=sid,
-                                name=str(source.get("name")),
-                                type=str(source.get("type")),
-                                doc_id=str(source.get("doc_id")),
-                                properties=dict(source),
-                            )
-                    if target is not None:
-                        tid = str(target.get("id"))
-                        if tid not in nodes:
-                            nodes[tid] = GraphNode(
-                                id=tid,
-                                name=str(target.get("name")),
-                                type=str(target.get("type")),
-                                doc_id=str(target.get("doc_id")),
-                                properties=dict(target),
-                            )
-                    if rel is not None and source is not None and target is not None:
-                        rid = str(rel.get("id"))
-                        if rid not in edges:
-                            edges[rid] = GraphEdge(
-                                id=rid,
-                                source_id=str(source.get("id")),
-                                target_id=str(target.get("id")),
-                                type=str(rel.get("type")),
-                                label=str(rel.get("label")),
-                                doc_id=str(rel.get("doc_id")),
-                                evidence=str(rel.get("evidence")) if rel.get("evidence") is not None else None,
-                                properties=dict(rel),
-                            )
-                log.result_count = len(nodes) + len(edges)
-        except Exception as e:
-            log.error = str(e)
-            raise
-        finally:
-            log.end_time = time.time()
-            self.query_logs.append(log)
-            logger.info(
-                f"Neo4j embedding subgraph: min_score={min_score} | "
-                f"Duration: {log.duration_ms:.2f}ms | Results: {log.result_count}"
-            )
-
-        return list(nodes.values()), list(edges.values())

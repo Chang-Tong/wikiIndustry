@@ -129,8 +129,8 @@ class GraphBuilder:
         # Map OneKE types to Neo4j types
         mapped_type = self._map_entity_type(node_type)
 
-        # Generate stable ID globally by type+name so same entity is shared across docs
-        node_id = self._stable_id(mapped_type, name)
+        # Generate stable ID
+        node_id = self._stable_id(doc_id, mapped_type, name)
 
         return GraphNode(
             id=node_id,
@@ -330,11 +330,7 @@ class GraphBuilder:
         return edges
 
     def _map_entity_type(self, oneke_type: str) -> str:
-        """Map OneKE entity type to Neo4j node type.
-
-        已知类型做标准化映射，未知类型直接透传保留 OneKE 原始标签，
-        避免丢失语义信息。
-        """
+        """Map OneKE entity type to Neo4j node type."""
         mapping: dict[str, str] = {
             "Organization": "Organization",
             "Person": "Person",
@@ -351,7 +347,7 @@ class GraphBuilder:
             "Device": "Technology",
             "Other": "Entity",
         }
-        return mapping.get(oneke_type, oneke_type)
+        return mapping.get(oneke_type, "Entity")
 
     def _stable_id(self, *parts: str) -> str:
         """Generate stable ID from parts."""

@@ -151,7 +151,13 @@ class RAGEngine:
 输出格式（JSON数组）：
 ["查询1", "查询2", ...]
 
-注意：优先使用 CONTAINS 进行模糊匹配，不要假设精确值存在。"""
+示例：
+用户问：哪些省份涉及义务教育？
+输出：
+[
+  "MATCH (n:Entity {type: 'NewsItem'}) WHERE n.name CONTAINS '义务教育' OR n.name CONTAINS '教育' RETURN n LIMIT 20",
+  "MATCH (n:Entity {type: 'NewsItem'})-[:REL]-(e:Entity) WHERE n.name =~ '.*(浙江|广东|上海|北京).*' AND (n.name CONTAINS '教育' OR e.name CONTAINS '教育') RETURN n, e LIMIT 20"
+]"""
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -275,7 +281,18 @@ class RAGEngine:
 - 体现推理过程
 - 承认信息局限性（如果有）
 
-"""
+【示例】
+检索结果：
+[1] 浙江(ProvinceTag) -> 推进义务教育
+[2] 广东(ProvinceTag) -> 教育改革涉及义务教育
+[3] 北京(ProvinceTag) -> 相关工作
+
+用户问：哪些省份涉及义务教育？
+
+回答：
+根据知识库数据，浙江、广东、北京等多个省份都涉及义务教育相关工作 [1][2][3]。
+
+具体而言，浙江省明确推进义务教育工作；广东省在教育改革中涉及义务教育内容；北京市也有相关工作部署。"""
 
         user_prompt = f"""检索结果：
 {context}
