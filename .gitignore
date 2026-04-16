@@ -37,3 +37,6 @@ nohup.out
 # PID files
 *.pid
 services/oneke-official
+
+# Demo / temporary files
+architecture-showcase*.html
