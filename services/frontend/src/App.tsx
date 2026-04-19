@@ -73,6 +73,7 @@ interface QueryLogInfo {
 
 interface AskResponse {
   answer: string
+  thinking?: string
   cypher_query: string | null
   sources: Array<{
     type: string
@@ -153,6 +154,17 @@ function getNodeColor(type: string | undefined): string {
   return palette[Math.abs(hash) % palette.length]
 }
 
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  return (
+    <div className="thinking-block">
+      <details>
+        <summary>思考过程</summary>
+        <div className="thinking-content">{thinking}</div>
+      </details>
+    </div>
+  )
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<'upload' | 'graph' | 'chat'>('upload')
   const [isLoading, setIsLoading] = useState(false)
@@ -183,6 +195,7 @@ export default function App() {
   const [chatHistory, setChatHistory] = useState<Array<{
     role: 'user' | 'assistant'
     content: string
+    thinking?: string
     sources?: AskResponse['sources']
     query_logs?: QueryLogInfo[]
     cypher_query?: string | null
@@ -716,6 +729,7 @@ export default function App() {
       setChatHistory(prev => [...prev, {
         role: 'assistant',
         content: data.answer,
+        thinking: data.thinking,
         sources: data.sources,
         query_logs: data.query_logs,
         cypher_query: data.cypher_query
@@ -789,11 +803,11 @@ export default function App() {
                         : 'rgba(10,132,255,0.35)'}`,
                   }}>
                     <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-                      {pendingJob.backendStatus === 'failed' && '❌ 处理失败'}
-                      {pendingJob.backendStatus === 'completed' && '✅ 处理完成'}
-                      {!pendingJob.backendStatus && '⏳ 准备上传'}
-                      {pendingJob.backendStatus === 'processing' && '⚙️ 后端处理中'}
-                      {!pendingJob.jobId && pendingJob.uploadProgress < 100 && '⏫ 正在上传'}
+                      {pendingJob.backendStatus === 'failed' && '[失败] 处理失败'}
+                      {pendingJob.backendStatus === 'completed' && '[完成] 处理完成'}
+                      {!pendingJob.backendStatus && '[等待] 准备上传'}
+                      {pendingJob.backendStatus === 'processing' && '[处理中] 后端处理中'}
+                      {!pendingJob.jobId && pendingJob.uploadProgress < 100 && '[上传中] 正在上传'}
                       <span style={{ marginLeft: 8, fontWeight: 500, color: 'var(--text-secondary)' }}>
                         {pendingJob.fileName}
                       </span>
@@ -872,7 +886,7 @@ export default function App() {
                 />
                 <label htmlFor="file-input">
                   <div className={`upload-zone ${selectedFile ? 'active' : ''}`}>
-                    <div className="upload-icon">📄</div>
+                    <div className="upload-icon">JSON</div>
                     <p style={{ fontSize: 16, fontWeight: 500, marginBottom: 8 }}>
                       {selectedFile ? selectedFile.name : '点击选择 JSON 文件'}
                     </p>
@@ -895,7 +909,6 @@ export default function App() {
                           className={`mode-option ${uploadMode === 'incremental' ? 'selected' : ''}`}
                         >
                           <div className="mode-label">
-                            <span>➕</span>
                             增量上传
                           </div>
                           <div className="mode-desc">在现有数据基础上添加</div>
@@ -906,7 +919,6 @@ export default function App() {
                           className={`mode-option danger ${uploadMode === 'overwrite' ? 'selected' : ''}`}
                         >
                           <div className="mode-label">
-                            <span>🔄</span>
                             覆盖上传
                           </div>
                           <div className="mode-desc">清空旧数据后上传</div>
@@ -921,7 +933,7 @@ export default function App() {
                           fontSize: 13,
                           color: '#FF375F'
                         }}>
-                          ⚠️ 警告：覆盖上传将删除所有现有的图谱数据
+                          警告：覆盖上传将删除所有现有的图谱数据
                         </p>
                       )}
                     </div>
@@ -939,40 +951,13 @@ export default function App() {
                         </>
                       ) : (
                         <>
-                          {uploadMode === 'overwrite' ? '🔄 覆盖上传' : '➕ 增量上传'}
+                          {uploadMode === 'overwrite' ? '覆盖上传' : '增量上传'}
                           <span style={{ marginLeft: 8, fontSize: 13, opacity: 0.8 }}>
                             ({selectedFile.name})
                           </span>
                         </>
                       )}
                     </button>
-
-                    {isLoading && uploadProgress > 0 && (
-                      <div style={{ marginTop: 16 }}>
-                        <div style={{
-                          height: 6,
-                          background: 'rgba(255,255,255,0.1)',
-                          borderRadius: 3,
-                          overflow: 'hidden',
-                        }}>
-                          <div style={{
-                            width: `${uploadProgress}%`,
-                            height: '100%',
-                            background: 'linear-gradient(90deg, #0A84FF, #64D2FF)',
-                            borderRadius: 3,
-                            transition: 'width 0.2s ease',
-                          }} />
-                        </div>
-                        <p style={{
-                          marginTop: 8,
-                          fontSize: 12,
-                          color: 'var(--text-secondary)',
-                          textAlign: 'center',
-                        }}>
-                          上传进度: {uploadProgress}%
-                        </p>
-                      </div>
-                    )}
                   </>
                 )}
 
@@ -985,7 +970,7 @@ export default function App() {
                   }}>
                     <div className={`badge ${uploadResult.errors.length === 0 ? 'badge-success' : 'badge-error'}`}
                       style={{ marginBottom: 16 }}>
-                      {uploadResult.errors.length === 0 ? '✓ 处理完成' : '✗ 处理失败'}
+                      {uploadResult.errors.length === 0 ? '处理完成' : '处理失败'}
                     </div>
                     <div className="stats-grid">
                       <div className="stat-item">
@@ -1312,21 +1297,9 @@ export default function App() {
                         </div>
                       )}
 
-                      <details>
-                        <summary style={{ fontSize: 13, color: 'var(--accent-blue)', cursor: 'pointer' }}>
-                          查看原始数据
-                        </summary>
-                        <pre style={{
-                          marginTop: 12,
-                          padding: 12,
-                          background: 'var(--bg-primary)',
-                          borderRadius: 8,
-                          fontSize: 12,
-                          overflow: 'auto',
-                          fontFamily: 'var(--font-mono)'
-                        }}>
-                          {JSON.stringify(selectedElement.data, null, 2)}
-                        </pre>
+                      <details className="raw-data-details">
+                        <summary>原始数据</summary>
+                        <pre>{JSON.stringify(selectedElement.data, null, 2)}</pre>
                       </details>
                     </div>
                   ) : (
@@ -1338,44 +1311,15 @@ export default function App() {
                 </div>
 
                 {/* 图例说明 */}
-                <div className="card-footer" style={{ padding: '16px', borderTop: '1px solid var(--border-color)' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12, color: 'var(--text-secondary)' }}>
-                    图例说明
-                  </div>
-
-                  {/* OneKE 关系 */}
-                  <div style={{ marginBottom: 12, padding: 10, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                      <div style={{
-                        width: 30,
-                        height: 2,
-                        background: 'rgba(255,255,255,0.25)',
-                        borderRadius: 1,
-                      }} />
-                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)' }}>
-                        OneKE 实体关系
-                      </span>
+                <div className="card-footer legend-footer">
+                  <div className="legend-row">
+                    <div className="legend-item">
+                      <div className="legend-line solid" />
+                      <span>OneKE 关系</span>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingLeft: 40 }}>
-                      从文档中提取的实体关系，如"发布"、"涉及"
-                    </div>
-                  </div>
-
-                  {/* 相似度关联 */}
-                  <div style={{ padding: 10, background: 'rgba(255,55,95,0.05)', borderRadius: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                      <div style={{
-                        width: 30,
-                        height: 3,
-                        background: 'repeating-linear-gradient(90deg, #FF375F 0px, #FF375F 6px, transparent 6px, transparent 10px)',
-                        borderRadius: 1,
-                      }} />
-                      <span style={{ fontSize: 12, fontWeight: 500, color: '#FF375F' }}>
-                        相似度关联
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingLeft: 40 }}>
-                      {useVector ? '基于实体+向量混合相似度计算，连接语义相关新闻' : '基于共享实体的 Jaccard 相似度计算，连接有共同实体的新闻'}
+                    <div className="legend-item">
+                      <div className="legend-line dashed" />
+                      <span className="legend-correlation">相似度关联</span>
                     </div>
                   </div>
                 </div>
@@ -1409,11 +1353,15 @@ export default function App() {
                         msg.content
                       )}
 
+                      {msg.thinking && (
+                        <ThinkingBlock thinking={msg.thinking} />
+                      )}
+
                       {(msg.query_logs || msg.cypher_query) && (
                         <div className="query-log">
                           <details>
                             <summary>
-                              🗄️ 查看 Neo4j 查询 ({msg.query_logs?.length || 0} 次查询)
+                              Neo4j 查询日志 ({msg.query_logs?.length || 0})
                             </summary>
                             <div className="query-log-content">
                               {msg.cypher_query && (
@@ -1432,8 +1380,8 @@ export default function App() {
                                     <div key={i} className="query-item">
                                       <div className="query-code">{log.query}</div>
                                       <div className="query-meta">
-                                        <span>⏱️ {log.duration_ms.toFixed(2)}ms</span>
-                                        <span>📊 {log.result_count} 结果</span>
+                                        <span>{log.duration_ms.toFixed(2)}ms</span>
+                                        <span>{log.result_count} 结果</span>
                                       </div>
                                     </div>
                                   ))}
@@ -1445,17 +1393,13 @@ export default function App() {
                       )}
 
                       {msg.sources && msg.sources.length > 0 && (
-                        <div style={{
-                          marginTop: 12,
-                          paddingTop: 12,
-                          borderTop: '1px solid rgba(255,255,255,0.1)',
-                          fontSize: 12,
-                          opacity: 0.8
-                        }}>
-                          <p style={{ marginBottom: 4 }}>来源: {msg.sources.length} 个</p>
-                          <div style={{ maxHeight: 160, overflowY: 'auto' }}>
+                        <div className="message-sources">
+                          <div className="source-label">来源 ({msg.sources.length})</div>
+                          <div className="source-chips">
                             {msg.sources.map((s, i) => (
-                              <p key={i} style={{ margin: 0 }}>• {s.name}</p>
+                              <span key={i} className="source-chip" title={s.name}>
+                                {s.name}
+                              </span>
                             ))}
                           </div>
                         </div>
