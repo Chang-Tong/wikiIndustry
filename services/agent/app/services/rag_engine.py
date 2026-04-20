@@ -75,6 +75,12 @@ class RAGEngine:
         graph_chunks = await self._execute_graph_queries(cypher_queries, top_k)
         query_logs.append({"step": "graph_retrieval", "chunks_count": len(graph_chunks)})
 
+        # 步骤2.5: 利用 CORRELATED_WITH 边扩展相似新闻
+        correlation_chunks = await self._expand_with_correlations(graph_chunks, top_k)
+        if correlation_chunks:
+            query_logs.append({"step": "correlation_expansion", "chunks_count": len(correlation_chunks)})
+            graph_chunks = graph_chunks + correlation_chunks
+
         # 步骤3: 文档检索（作为补充）
         doc_chunks = await self._retrieve_documents(question, doc_id, top_k)
         query_logs.append({"step": "doc_retrieval", "chunks_count": len(doc_chunks)})
@@ -140,6 +146,8 @@ class RAGEngine:
 - 省份/城市通常作为 type='Entity' 存储，name 属性包含省份名称如"浙江"、"广东"、"上海"等
 - 不要假设有 ProvinceTag 类型，省份就是普通的 Entity 类型
 - 新闻标题通常包含省份名称，可以直接在 NewsItem 的 name 中搜索
+- CORRELATED_WITH 表示两篇新闻语义相似（embedding + entity 重叠计算），用于找"相关新闻"或"类似报道"
+- 当你需要扩展信息源、找相关报道时，主动使用 CORRELATED_WITH 关系
 
 任务：根据用户问题生成 Cypher 查询语句。
 要求：
@@ -248,6 +256,95 @@ class RAGEngine:
                     continue
 
         return chunks
+
+    async def _expand_with_correlations(
+        self,
+        graph_chunks: list[RetrievedChunk],
+        top_k: int,
+    ) -> list[RetrievedChunk]:
+        """利用 CORRELATED_WITH 边扩展相似新闻。
+
+        从已有的 graph_chunks 中提取 NewsItem 节点，查询其 CORRELATED_WITH
+        邻居，把高相似度的新闻作为补充检索结果返回。
+        """
+        if not self.neo4j or not graph_chunks:
+            return []
+
+        driver = self.neo4j._driver
+        if not driver:
+            return []
+
+        # 从 graph_chunks 的 text 中提取 NewsItem name（格式: "name(type)"）
+        news_names: set[str] = set()
+        for chunk in graph_chunks:
+            if chunk.source != "graph":
+                continue
+            # text 格式如: "name(type) -> name2(type2)"
+            parts = chunk.text.split(" -> ")
+            for part in parts:
+                if "(NewsItem)" in part:
+                    name = part.split("(NewsItem)")[0].strip()
+                    if name:
+                        news_names.add(name)
+
+        if not news_names:
+            logger.info("[_expand_with_correlations] No NewsItem found in graph_chunks, skipping")
+            return []
+
+        logger.info(f"[_expand_with_correlations] Found {len(news_names)} NewsItem names, expanding...")
+
+        expanded: list[RetrievedChunk] = []
+        seen_texts: set[str] = set()
+
+        async with driver.session() as session:
+            for name in list(news_names)[:5]:
+                try:
+                    result = await session.run(
+                        """
+                        MATCH (n:Entity {type: 'NewsItem', name: $name})
+                              -[r:CORRELATED_WITH]-(m:Entity {type: 'NewsItem'})
+                        RETURN m.name as news_name, m.doc_id as doc_id,
+                               r.score as score, r.entity_score as entity_score,
+                               r.vector_score as vector_score, r.correlation_type as corr_type
+                        ORDER BY r.score DESC
+                        LIMIT $limit
+                        """,
+                        name=name,
+                        limit=3,
+                    )
+                    async for record in result:
+                        news_name = record.get("news_name")
+                        score = record.get("score", 0)
+                        if not news_name:
+                            continue
+
+                        text = f"{news_name}(NewsItem) [相似度关联: {name}]"
+                        if text in seen_texts:
+                            continue
+                        seen_texts.add(text)
+
+                        # 计算加权分数: base 1.5 + correlation_score * 2
+                        weighted_score = 1.5 + float(score) * 2
+
+                        expanded.append(RetrievedChunk(
+                            text=text,
+                            score=round(weighted_score, 2),
+                            source="graph",
+                            meta={
+                                "kind": "correlated_news",
+                                "source_news": name,
+                                "correlation_score": score,
+                                "entity_score": record.get("entity_score"),
+                                "vector_score": record.get("vector_score"),
+                                "correlation_type": record.get("corr_type"),
+                                "doc_id": record.get("doc_id"),
+                            },
+                        ))
+                except Exception as e:
+                    logger.warning(f"[_expand_with_correlations] Query failed for '{name}': {e}")
+
+        logger.info(f"[_expand_with_correlations] Expanded {len(expanded)} correlated news items")
+        return expanded[:top_k]
 
     async def _generate_answer_with_reasoning(
         self,

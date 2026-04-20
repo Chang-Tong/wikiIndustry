@@ -17,7 +17,6 @@ from app.core.settings import settings
 from app.domain.extraction.models import ExtractionResult
 from app.integrations.neo4j.client import GraphEdge, GraphNode, Neo4jClient, stable_id
 from app.integrations.oneke.client import OneKEClient
-from app.integrations.ragflow.client import RAGFlowClient
 from app.store.sqlite import SqliteStore
 
 router = APIRouter()
@@ -698,21 +697,7 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
     )
     await asyncio.sleep(0)
 
-    ragflow_url = settings.ragflow_base_url.strip()
     oneke_url = settings.oneke_base_url.strip()
-    if settings.require_real_ragflow:
-        if not ragflow_url:
-            store.update_job(job_id, status="failed", error="RAGFLOW_BASE_URL 未配置，请填写真实 RAGFlow 服务地址")
-            logger.error("extract_job_failed job_id=%s doc_id=%s reason=ragflow_base_url_missing", job_id, doc_id)
-            return
-        if not settings.ragflow_api_key.strip():
-            store.update_job(job_id, status="failed", error="RAGFLOW_API_KEY 未配置，请填写真实 RAGFlow API Key")
-            logger.error("extract_job_failed job_id=%s doc_id=%s reason=ragflow_api_key_missing", job_id, doc_id)
-            return
-        if ragflow_url.startswith("http://localhost:8000/api/v1/ragflow"):
-            store.update_job(job_id, status="failed", error="RAGFLOW_BASE_URL 指向本地 mock，请改为真实 RAGFlow 服务地址")
-            logger.error("extract_job_failed job_id=%s doc_id=%s reason=ragflow_base_url_mock", job_id, doc_id)
-            return
     if settings.require_real_oneke:
         if not oneke_url:
             store.update_job(job_id, status="failed", error="ONEKE_BASE_URL 未配置，请填写真实 OneKE 服务地址")
@@ -722,21 +707,6 @@ async def _run_extract_job(*, job_id: str, doc_id: str, schema_name: str | None,
             store.update_job(job_id, status="failed", error="ONEKE_BASE_URL 指向本地 mock，请改为真实 OneKE 服务地址")
             logger.error("extract_job_failed job_id=%s doc_id=%s reason=oneke_base_url_mock", job_id, doc_id)
             return
-
-    ragflow = RAGFlowClient(
-        settings.ragflow_base_url,
-        api_key=settings.ragflow_api_key,
-        dataset_name=settings.ragflow_dataset_name,
-    )
-    try:
-        await ragflow.ingest_text(doc_id=doc.doc_id, title=doc.title, text=doc.text)
-        logger.warning("ragflow_ingest_done job_id=%s doc_id=%s", job_id, doc_id)
-    except Exception as e:
-        if settings.require_real_ragflow and settings.ragflow_base_url.strip():
-            store.update_job(job_id, status="failed", error=f"ragflow_ingest_failed: {repr(e)}")
-            logger.exception("ragflow_ingest_failed job_id=%s doc_id=%s", job_id, doc_id)
-            return
-        logger.exception("ragflow_ingest_failed job_id=%s doc_id=%s", job_id, doc_id)
 
     oneke = OneKEClient(
         settings.oneke_base_url,

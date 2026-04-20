@@ -14,12 +14,8 @@ class Settings(BaseSettings):
     neo4j_password: str = "neo4j_password"
 
     oneke_base_url: str = ""
-    ragflow_base_url: str = ""
-    ragflow_api_key: str = ""
-    ragflow_dataset_name: str = "wikiProject-kb"
     classification_mode: str = "llm"
     require_real_oneke: bool = True
-    require_real_ragflow: bool = True
 
     openai_base_url: str = ""
     openai_api_key: str = ""

@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 
 from app.core.settings import settings
 from app.integrations.neo4j.client import GraphEdge, GraphNode, Neo4jClient
-from app.integrations.ragflow.client import RAGFlowClient
 from app.services.rag_engine import RAGEngine
 from app.store.sqlite import SqliteStore
 
@@ -27,46 +26,6 @@ async def debug_settings() -> dict[str, Any]:
         "openai_model": settings.openai_model,
         "require_ollama_embedding": settings.require_ollama_embedding,
         "ollama_base_url": settings.ollama_base_url,
-    }
-
-
-@router.post("/debug/rag-test")
-async def debug_rag_test(request: Request) -> dict[str, Any]:
-    """Debug endpoint to test RAG engine."""
-    from app.services.rag_engine_v2 import AdaptiveRAGEngine
-    neo4j: Neo4jClient | None = request.app.state.neo4j
-
-    if neo4j is None:
-        return {"error": "Neo4j not available"}
-
-    # Read question from request body
-    try:
-        body = await request.json()
-        question = body.get("question", "哪些省份涉及义务教育？")
-    except Exception:
-        question = "哪些省份涉及义务教育？"
-
-    engine = AdaptiveRAGEngine(neo4j_client=neo4j)
-
-    # Test full RAG pipeline
-    result = await engine.answer(question=question, top_k=10)
-
-    return {
-        "answer": result.answer,
-        "sources_count": len(result.sources),
-        "query_plans": [
-            {
-                "thinking": plan.thinking,
-                "queries": plan.queries,
-                "needs_direct_analysis": plan.needs_direct_analysis,
-                "follow_up_needed": plan.follow_up_needed,
-            }
-            for plan in result.query_plans
-        ],
-        "confidence": result.confidence,
-        "reasoning_process": result.reasoning_process,
-        "settings_api_key_set": bool(settings.openai_api_key),
-        "settings_base_url": settings.openai_base_url,
     }
 
 
@@ -177,35 +136,6 @@ def _simple_retrieve(*, question: str, text: str, top_k: int) -> list[RetrievedC
         picked = [(0, ch) for ch in chunks[:top_k]]
 
     return [RetrievedChunk(text=ch, score=float(s)) for s, ch in picked]
-
-
-def _extract_chunks_from_ragflow_response(data: object) -> list[RetrievedChunk]:
-    if not isinstance(data, dict):
-        return []
-    for key in ("chunks", "contexts", "data", "results"):
-        v = data.get(key)
-        if isinstance(v, list):
-            out: list[RetrievedChunk] = []
-            for row in v:
-                if isinstance(row, str) and row.strip():
-                    out.append(RetrievedChunk(text=row.strip()))
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                text = row.get("text") or row.get("content") or row.get("chunk") or ""
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                score = row.get("score")
-                meta = row.get("meta")
-                out.append(
-                    RetrievedChunk(
-                        text=text.strip(),
-                        score=float(score) if isinstance(score, (int, float)) else None,
-                        meta=meta if isinstance(meta, dict) else None,
-                    )
-                )
-            return out
-    return []
 
 
 async def _expand_query_with_llm(question: str) -> list[str]:
@@ -506,153 +436,8 @@ async def _llm_answer(*, question: str, chunks: list[RetrievedChunk]) -> str | N
     return content.strip() if isinstance(content, str) and content.strip() else None
 
 
-@router.post("/rag/ask", response_model=AskResponse)
-async def rag_ask(payload: AskRequest, request: Request) -> AskResponse:
-    ragflow_url = settings.ragflow_base_url.strip()
-    if settings.require_real_ragflow:
-        if not ragflow_url:
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 未配置，请填写真实 RAGFlow 服务地址")
-        if not settings.ragflow_api_key.strip():
-            raise HTTPException(status_code=400, detail="RAGFLOW_API_KEY 未配置，请填写真实 RAGFlow API Key")
-        if ragflow_url.startswith("http://localhost:8000/api/v1/ragflow"):
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 指向本地 mock，请改为真实 RAGFlow 服务地址")
-    store: SqliteStore = request.app.state.store
-    ragflow = RAGFlowClient(
-        settings.ragflow_base_url,
-        api_key=settings.ragflow_api_key,
-        dataset_name=settings.ragflow_dataset_name,
-    )
-
-    chunks: list[RetrievedChunk] = []
-    rag_enabled = bool(settings.ragflow_base_url and settings.ragflow_api_key)
-
-    if rag_enabled:
-        try:
-            data = await ragflow.query(query=payload.question, top_k=payload.top_k, doc_id=payload.doc_id)
-            chunks = _extract_chunks_from_ragflow_response(data)
-        except Exception as e:
-            if settings.require_real_ragflow:
-                raise HTTPException(status_code=502, detail=f"ragflow_query_failed: {repr(e)}")
-            chunks = []
-
-    if not chunks:
-        if not payload.doc_id:
-            raise HTTPException(status_code=400, detail="doc_id_required_when_ragflow_disabled")
-        doc = store.get_doc(payload.doc_id)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="doc_not_found")
-        chunks = _simple_retrieve(question=payload.question, text=doc.text, top_k=payload.top_k)
-
-    answer = await _llm_answer(question=payload.question, chunks=chunks)
-    llm_enabled = bool(settings.openai_api_key and settings.openai_model)
-    return AskResponse(rag_enabled=rag_enabled, llm_enabled=llm_enabled, answer=answer, chunks=chunks)
-
-
-class RagflowIngestRequest(BaseModel):
-    doc_id: str = Field(min_length=1, max_length=200)
-    title: str = Field(default="untitled", min_length=1, max_length=200)
-    text: str = Field(min_length=1)
-
-
-class RagflowQueryRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=1000)
-    top_k: int = Field(default=6, ge=1, le=20)
-    doc_id: str | None = None
-
-
-@router.post("/ragflow/ingest")
-async def ragflow_ingest(payload: RagflowIngestRequest, request: Request) -> dict[str, object]:
-    store: SqliteStore = request.app.state.store
-    store.upsert_doc(doc_id=payload.doc_id, title=payload.title, text=payload.text)
-    return {"ok": True, "doc_id": payload.doc_id}
-
-
-@router.post("/ragflow/query")
-async def ragflow_query(payload: RagflowQueryRequest, request: Request) -> dict[str, object]:
-    store: SqliteStore = request.app.state.store
-    if not payload.doc_id:
-        raise HTTPException(status_code=400, detail="doc_id_required")
-    doc = store.get_doc(payload.doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="doc_not_found")
-    chunks = _simple_retrieve(question=payload.query, text=doc.text, top_k=payload.top_k)
-    out = []
-    for c in chunks:
-        out.append(
-            {
-                "text": c.text,
-                "score": c.score,
-                "meta": {"doc_id": doc.doc_id, "title": doc.title},
-            }
-        )
-    return {"chunks": out}
-
-
-@router.post("/qa/ask", response_model=AskResponse)
-async def qa_ask(payload: AskRequest, request: Request) -> AskResponse:
-    ragflow_url = settings.ragflow_base_url.strip()
-    if settings.require_real_ragflow:
-        if not ragflow_url:
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 未配置，请填写真实 RAGFlow 服务地址")
-        if not settings.ragflow_api_key.strip():
-            raise HTTPException(status_code=400, detail="RAGFLOW_API_KEY 未配置，请填写真实 RAGFlow API Key")
-        if ragflow_url.startswith("http://localhost:8000/api/v1/ragflow"):
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 指向本地 mock，请改为真实 RAGFlow 服务地址")
-    store: SqliteStore = request.app.state.store
-    if not payload.doc_id:
-        raise HTTPException(status_code=400, detail="doc_id_required")
-    doc = store.get_doc(payload.doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="doc_not_found")
-
-    ragflow = RAGFlowClient(
-        settings.ragflow_base_url,
-        api_key=settings.ragflow_api_key,
-        dataset_name=settings.ragflow_dataset_name,
-    )
-    rag_enabled = bool(settings.ragflow_base_url and settings.ragflow_api_key)
-    text_chunks: list[RetrievedChunk] = []
-    if rag_enabled:
-        try:
-            data = await ragflow.query(query=payload.question, top_k=payload.top_k, doc_id=payload.doc_id)
-            text_chunks = _extract_chunks_from_ragflow_response(data)
-        except Exception as e:
-            if settings.require_real_ragflow:
-                raise HTTPException(status_code=502, detail=f"ragflow_query_failed: {repr(e)}")
-            text_chunks = []
-    if not text_chunks:
-        text_chunks = _simple_retrieve(question=payload.question, text=doc.text, top_k=payload.top_k)
-
-    graph_chunks: list[RetrievedChunk] = []
-    neo4j: Neo4jClient | None = request.app.state.neo4j
-    if neo4j is not None:
-        try:
-            nodes, edges = await neo4j.read_graph_by_doc_id(doc_id=payload.doc_id)
-            graph_chunks = await _graph_retrieve(
-                question=payload.question,
-                nodes=nodes,
-                edges=edges,
-                top_k=payload.top_k,
-            )
-        except Exception:
-            graph_chunks = []
-
-    chunks = _merge_chunks(graph_chunks, text_chunks, payload.top_k)
-    answer = await _llm_answer(question=payload.question, chunks=chunks)
-    llm_enabled = bool(settings.openai_api_key and settings.openai_model)
-    return AskResponse(rag_enabled=rag_enabled, llm_enabled=llm_enabled, answer=answer, chunks=chunks)
-
-
 @router.post("/qa/ask-many", response_model=AskResponse)
 async def qa_ask_many(payload: AskManyRequest, request: Request) -> AskResponse:
-    ragflow_url = settings.ragflow_base_url.strip()
-    if settings.require_real_ragflow:
-        if not ragflow_url:
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 未配置，请填写真实 RAGFlow 服务地址")
-        if not settings.ragflow_api_key.strip():
-            raise HTTPException(status_code=400, detail="RAGFLOW_API_KEY 未配置，请填写真实 RAGFlow API Key")
-        if ragflow_url.startswith("http://localhost:8000/api/v1/ragflow"):
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 指向本地 mock，请改为真实 RAGFlow 服务地址")
     doc_ids = [x for x in payload.doc_ids if x.strip()][:200]
     if not doc_ids:
         raise HTTPException(status_code=400, detail="doc_ids_required")
@@ -661,12 +446,6 @@ async def qa_ask_many(payload: AskManyRequest, request: Request) -> AskResponse:
 
 async def _qa_across_docs(*, question: str, top_k: int, doc_ids: list[str], request: Request) -> AskResponse:
     store: SqliteStore = request.app.state.store
-    ragflow = RAGFlowClient(
-        settings.ragflow_base_url,
-        api_key=settings.ragflow_api_key,
-        dataset_name=settings.ragflow_dataset_name,
-    )
-    rag_enabled = bool(settings.ragflow_base_url and settings.ragflow_api_key)
     neo4j: Neo4jClient | None = request.app.state.neo4j
     all_text_chunks: list[RetrievedChunk] = []
     all_graph_chunks: list[RetrievedChunk] = []
@@ -677,14 +456,6 @@ async def _qa_across_docs(*, question: str, top_k: int, doc_ids: list[str], requ
         if doc is None:
             continue
         text_chunks: list[RetrievedChunk] = []
-        if rag_enabled:
-            try:
-                data = await ragflow.query(query=question, top_k=per_doc_k, doc_id=doc_id)
-                text_chunks = _extract_chunks_from_ragflow_response(data)
-            except Exception as e:
-                if settings.require_real_ragflow:
-                    raise HTTPException(status_code=502, detail=f"ragflow_query_failed: {repr(e)}")
-                text_chunks = []
         if not text_chunks:
             text_chunks = _simple_retrieve(question=question, text=doc.text, top_k=per_doc_k)
         for ch in text_chunks:
@@ -707,19 +478,11 @@ async def _qa_across_docs(*, question: str, top_k: int, doc_ids: list[str], requ
     chunks = _rerank_chunks_by_question(chunks=merged, question=question, top_k=top_k)
     answer = await _llm_answer(question=question, chunks=chunks)
     llm_enabled = bool(settings.openai_api_key and settings.openai_model)
-    return AskResponse(rag_enabled=rag_enabled, llm_enabled=llm_enabled, answer=answer, chunks=chunks)
+    return AskResponse(rag_enabled=False, llm_enabled=llm_enabled, answer=answer, chunks=chunks)
 
 
 @router.post("/qa/ask-kb", response_model=AskResponse)
 async def qa_ask_kb(payload: AskKnowledgeRequest, request: Request) -> AskResponse:
-    ragflow_url = settings.ragflow_base_url.strip()
-    if settings.require_real_ragflow:
-        if not ragflow_url:
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 未配置，请填写真实 RAGFlow 服务地址")
-        if not settings.ragflow_api_key.strip():
-            raise HTTPException(status_code=400, detail="RAGFLOW_API_KEY 未配置，请填写真实 RAGFlow API Key")
-        if ragflow_url.startswith("http://localhost:8000/api/v1/ragflow"):
-            raise HTTPException(status_code=400, detail="RAGFLOW_BASE_URL 指向本地 mock，请改为真实 RAGFlow 服务地址")
     store: SqliteStore = request.app.state.store
     doc_ids = store.list_finished_doc_ids(limit=payload.max_docs)
     if not doc_ids:
