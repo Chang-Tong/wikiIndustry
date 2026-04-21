@@ -18,6 +18,7 @@ NAMESPACES = {
     "owl": "http://www.w3.org/2002/07/owl#",
     "xsd": "http://www.w3.org/2001/XMLSchema#",
     "kg": "http://example.org/knowledge-graph#",
+    "xml": "http://www.w3.org/XML/1998/namespace",
 }
 
 
