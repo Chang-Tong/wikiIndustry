@@ -8,7 +8,6 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.core.settings import settings
 from app.integrations.neo4j.client import GraphEdge, GraphNode, Neo4jClient
 from app.services.rag_engine import RAGEngine
 from app.store.sqlite import SqliteStore
@@ -16,34 +15,20 @@ from app.store.sqlite import SqliteStore
 router = APIRouter()
 
 
-@router.get("/debug/settings")
-async def debug_settings() -> dict[str, Any]:
-    """Debug endpoint to check settings."""
-    return {
-        "openai_base_url": settings.openai_base_url,
-        "openai_api_key_set": bool(settings.openai_api_key),
-        "openai_api_key_prefix": settings.openai_api_key[:10] + "..." if settings.openai_api_key else None,
-        "openai_model": settings.openai_model,
-        "require_ollama_embedding": settings.require_ollama_embedding,
-        "ollama_base_url": settings.ollama_base_url,
-    }
-
-
-class CreateDocRequest(BaseModel):
-    title: str = Field(default="untitled", min_length=1, max_length=200)
-    text: str = Field(min_length=1)
-
-
-class CreateDocResponse(BaseModel):
+class DocDetail(BaseModel):
     doc_id: str
+    title: str
+    text: str
 
 
-@router.post("/docs", response_model=CreateDocResponse)
-async def create_doc(payload: CreateDocRequest, request: Request) -> CreateDocResponse:
+@router.get("/docs/{doc_id}", response_model=DocDetail)
+async def get_doc(doc_id: str, request: Request) -> DocDetail:
+    """Get document by ID."""
     store: SqliteStore = request.app.state.store
-    doc_id = uuid4().hex
-    store.create_doc(doc_id=doc_id, title=payload.title, text=payload.text)
-    return CreateDocResponse(doc_id=doc_id)
+    doc = store.get_doc(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="doc_not_found")
+    return DocDetail(doc_id=doc.doc_id, title=doc.title, text=doc.text)
 
 
 class RetrievedChunk(BaseModel):
