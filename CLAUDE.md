@@ -149,3 +149,21 @@ curl -X POST http://localhost:8000/api/v1/qa/ask-graph \
 # Get correlations
 curl "http://localhost:8000/api/v1/correlations?min_score=0.3&limit=5"
 ```
+
+## Git Workflow
+
+### Push via gh CLI
+
+This repo uses **gh CLI + HTTPS** for pushing (not SSH). When pushing, always use this flow:
+
+```bash
+# Ensure remote is HTTPS
+git remote set-url origin https://github.com/Chang-Tong/wikiIndustry.git
+
+# Ensure git uses gh credentials
+git config --global credential.helper 'store'
+gh auth setup-git
+
+# Push
+git push origin main
+```

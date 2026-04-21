@@ -95,11 +95,6 @@ class StructuredExportResponse(BaseModel):
     cypher: str | None = None
 
 
-class LocalOneKEExtractRequest(BaseModel):
-    text: str = Field(min_length=1)
-    schema_name: str | None = None
-
-
 def _extract_text_from_docx_bytes(data: bytes) -> str:
     docx = importlib.import_module("docx")
     document_factory = getattr(docx, "Document")
@@ -1407,22 +1402,3 @@ async def get_job(job_id: str, request: Request) -> JobStatusResponse:
     if job is None:
         raise HTTPException(status_code=404, detail="job_not_found")
     return JobStatusResponse(job_id=job.job_id, doc_id=job.doc_id, status=job.status, error=job.error)
-
-
-@router.post("/oneke/extract")
-async def local_oneke_extract(payload: LocalOneKEExtractRequest) -> dict[str, object]:
-    primary = OneKEClient(
-        "",
-        openai_base_url=settings.openai_base_url,
-        openai_api_key=settings.openai_api_key,
-        openai_model=settings.openai_model,
-    )
-    try:
-        extracted = await primary.extract(text=payload.text, schema_name=payload.schema_name)
-    except Exception:
-        fallback = OneKEClient("")
-        extracted = await fallback.extract(text=payload.text, schema_name=payload.schema_name)
-    return {
-        "entities": [e.model_dump() for e in extracted.entities],
-        "relations": [r.model_dump() for r in extracted.relations],
-    }
