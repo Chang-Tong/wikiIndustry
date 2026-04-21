@@ -38,6 +38,7 @@ class RAGAnswer:
     sources: list[dict[str, Any]]
     query_logs: list[dict[str, Any]]
     confidence: dict[str, Any]  # 置信度信息
+    reasoning_process: str = ""  # 推理过程说明
 
 
 class RAGEngine:

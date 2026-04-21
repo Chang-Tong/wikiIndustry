@@ -92,12 +92,30 @@ curl http://localhost:7474                 # Neo4j Browser
 
 ## Critical Rules
 
-### 1. No Mock Data / No Simulation
-All features must connect to real services. Fallbacks to demo/mock data are forbidden:
+### 1. No Mock Data / No Simulation / No Fallback
+All features must connect to real services. Fallbacks to demo/mock/simulated data are **strictly forbidden**:
 - Neo4j must be real
 - OneKE must be real (`REQUIRE_REAL_ONEKE=true`)
 - LLM calls must be real
 - Front-end must display real graph data
+
+**Pipeline Integrity**: Every component in the data flow must perform real work:
+- `JSONNewsProcessor` → real JSON parsing (no synthetic data injection)
+- `OneKEClient.extract()` → real HTTP call to OneKE service (no LLM simulation, no demo extraction)
+- `GraphBuilder` → real graph construction from extraction results
+- `Neo4jClient.upsert_graph()` → real Neo4j write (no mock storage)
+- `CorrelationMiningService` → real similarity computation (no fake edges)
+- `RAGEngine` → real retrieval + real LLM inference (no canned responses)
+
+**Prohibited Patterns**:
+- Empty `base_url` passed to `OneKEClient` to trigger LLM fallback
+- `_extract_llm()` or `_extract_demo()` methods in production paths
+- Any endpoint that bypasses `REQUIRE_REAL_ONEKE` guard
+- Mock Neo4j drivers or in-memory graph replacements
+- Simulated embeddings (random vectors, zero vectors)
+- Hardcoded QA responses
+
+**Enforcement**: All ingestion paths must validate `REQUIRE_REAL_ONEKE=true` and `ONEKE_BASE_URL` points to a real service before calling `OneKEClient.extract()`. Any violation must raise `RuntimeError` immediately.
 
 ### 2. Mandatory Post-Change Review
 **After every code change**, launch three subagents in parallel to review:

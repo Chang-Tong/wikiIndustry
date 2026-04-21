@@ -924,7 +924,7 @@ async def qa_rag(payload: RAGAskRequest, request: Request) -> RAGAskResponse:
     2. LLM 自主决策 - 自己决定检索策略
     3. 自我修正机制 - 支持多轮迭代优化
     """
-    from app.services.rag_engine_v2 import AdaptiveRAGEngine
+    from app.services.rag_engine import RAGEngine
 
     neo4j: Neo4jClient | None = request.app.state.neo4j
     store: SqliteStore | None = request.app.state.store
@@ -933,13 +933,13 @@ async def qa_rag(payload: RAGAskRequest, request: Request) -> RAGAskResponse:
         raise HTTPException(status_code=503, detail="Neo4j not available")
 
     try:
-        # 创建自适应 RAG 引擎 V2
-        engine = AdaptiveRAGEngine(
+        # 创建 RAG 引擎
+        engine = RAGEngine(
             neo4j_client=neo4j,
             sqlite_store=store,
         )
 
-        # 执行 RAG V2
+        # 执行 RAG
         result = await engine.answer(
             question=payload.question,
             doc_id=payload.doc_id,

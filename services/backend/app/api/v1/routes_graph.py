@@ -320,7 +320,7 @@ async def get_graph_by_theme(
         raise HTTPException(status_code=503, detail="Neo4j not available")
 
     try:
-        nodes, edges = await neo4j.get_nodes_by_theme(theme=theme, news_limit=news_limit)
+        nodes, edges = await neo4j.get_nodes_by_theme(theme=theme)
 
         # 统计信息
         news_nodes = [n for n in nodes if n.type == "NewsItem"]
